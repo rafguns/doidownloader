@@ -15,6 +15,7 @@ import lxml
 import pandas as pd
 import requests
 import requests_html
+from tqdm.auto import tqdm
 
 LookupResult = namedtuple("LookupResult", "url, error, status_code, content")
 # Prefill a few publishers where we encountered problems due to missing or
@@ -236,7 +237,7 @@ def save_metadata(
         row[0] for row in cur.execute("select doi from doi_meta").fetchall()
     }
 
-    for i, doi in enumerate(dois, start=1):
+    for doi in tqdm(dois):
         if doi in inserted_dois:
             continue
         doi_url = "https://doi.org/" + quote(doi)
@@ -282,9 +283,8 @@ def save_fulltext(conn: sqlite3.Connection, session: requests_html.HTMLSession) 
             d[k].add(v)
         return d
 
-    # XXX Does this look up same DOI more than once?
-    for doi, url, error, status_code, meta in cur:
-        print(doi)
+    # XXX Decouple this from doi_meta table
+    for doi, url, error, status_code, meta, last_change in tqdm(cur.fetchall()):
         results = []
 
         # Direct PDF link
