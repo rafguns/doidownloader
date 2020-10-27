@@ -6,6 +6,7 @@ import sqlite3
 import time
 import warnings
 from collections import defaultdict, namedtuple
+from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urljoin, urlsplit, urlunsplit
@@ -226,7 +227,8 @@ def save_metadata(
             url text,
             error text,
             status_code integer,
-            meta text
+            meta text,
+            last_change timestamp
         )
         """
     )
@@ -243,9 +245,8 @@ def save_metadata(
         doi_url = "https://doi.org/" + quote(doi)
         res = metadata_from_url(doi_url, session)
 
-        cur.execute("""insert into doi_meta values (?, ?, ?, ?, ?)""", (doi, *res))
+        cur.execute("""insert into doi_meta values (?, ?, ?, ?, ?, ?)""", (doi, *res, datetime.now()))
         conn.commit()
-        print(i, doi, "Y" if res.content and res.content != "[]" else "N")
         time.sleep(check_crawl_delay(res.url))
 
 
@@ -262,6 +263,7 @@ def save_fulltext(conn: sqlite3.Connection, session: requests_html.HTMLSession) 
             status_code integer,
             content blob,
             content_type text,
+            last_change timestamp,
             constraint doi_fulltext_pk primary key (doi, url)
         )
         """
@@ -333,8 +335,8 @@ def save_fulltext(conn: sqlite3.Connection, session: requests_html.HTMLSession) 
         for res in results:
             try:
                 conn.execute(
-                    """insert into doi_fulltext values (?, ?, ?, ?, ?, ?)""",
-                    (doi, *res),
+                    """insert into doi_fulltext values (?, ?, ?, ?, ?, ?, ?)""",
+                    (doi, *res, datetime.now()),
                 )
             except sqlite3.IntegrityError:
                 # Ignore - this may happen if same content is registered under
