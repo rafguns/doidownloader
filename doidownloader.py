@@ -8,7 +8,7 @@ import warnings
 from collections import defaultdict, namedtuple
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
-from urllib.error import HTTPError, URLError
+from urllib.error import URLError
 from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 from urllib.robotparser import RobotFileParser
 
@@ -391,24 +391,6 @@ def determine_filename(
         extra_letter = chr(ord(extra_letter) + 1)
 
     return determine_filename(basename, ext, content, extra_letter)
-
-
-def save_to_docs(conn: sqlite3.Connection, folder: str = "data2") -> None:
-    # XXX This uses table dois which does not come from code in rest of file!!
-    for loi, _, content_type, _, _, content in conn.execute(
-        """select * from dois where status_code=200"""
-    ):
-        ext = determine_extension(content_type, content)
-        basename = f'{folder}/{loi.replace(":", "")}'
-
-        try:
-            fname = determine_filename(basename, ext, content)
-            if content:
-                with open(fname, "wb") as fh:
-                    fh.write(content)
-        except FileWithSameContentExists:
-            # Don't save; another file for this loi already has exact same contents
-            pass
 
 
 if __name__ == "__main__":
