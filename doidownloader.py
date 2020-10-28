@@ -187,7 +187,7 @@ def retrieve_fulltext(
 
     # ScienceDirect uses *another* interim page here; follow only link, which redirects to
     # the actual PDF
-    if 'sciencedirect.com' in url and len(r.html.links) == 1:
+    if "sciencedirect.com" in url and len(r.html.links) == 1:
         return retrieve_fulltext(r.html.links.pop(), session, expected_ftype, **kwargs)
 
     return None
@@ -212,13 +212,13 @@ def best_unpaywall_url(
 
 
 def save_metadata(
-    dois: List[str], conn: sqlite3.Connection, session: requests_html.HTMLSession
+    dois: List[str], con: sqlite3.Connection, session: requests_html.HTMLSession
 ) -> None:
     """Retrieve and save metadata for all DOIs"""
     # Field error specifies what kind of error (if any) has occurred
     # (e.g. no content, connection error, HTTP error).
     # Field status_code is for HTTP status code, including HTTP errors.
-    cur = conn.cursor()
+    cur = con.cursor()
     cur.execute(
         """
         create table if not exists doi_meta
@@ -232,7 +232,7 @@ def save_metadata(
         )
         """
     )
-    conn.commit()
+    con.commit()
 
     # With this, we can run the script in multiple batches.
     inserted_dois = {
@@ -245,14 +245,17 @@ def save_metadata(
         doi_url = "https://doi.org/" + quote(doi)
         res = metadata_from_url(doi_url, session)
 
-        cur.execute("""insert into doi_meta values (?, ?, ?, ?, ?, ?)""", (doi, *res, datetime.now()))
-        conn.commit()
+        cur.execute(
+            """insert into doi_meta values (?, ?, ?, ?, ?, ?)""",
+            (doi, *res, datetime.now()),
+        )
+        con.commit()
         time.sleep(check_crawl_delay(res.url))
 
 
-def save_fulltext(conn: sqlite3.Connection, session: requests_html.HTMLSession) -> None:
+def save_fulltext(con: sqlite3.Connection, session: requests_html.HTMLSession) -> None:
     """Retrieve and save full-text (where available) of all DOIs in table doi_meta"""
-    cur = conn.cursor()
+    cur = con.cursor()
     cur.execute(
         """
         create table if not exists doi_fulltext
@@ -268,7 +271,7 @@ def save_fulltext(conn: sqlite3.Connection, session: requests_html.HTMLSession) 
         )
         """
     )
-    conn.commit()
+    con.commit()
 
     cur.execute(
         """
@@ -312,7 +315,6 @@ def save_fulltext(conn: sqlite3.Connection, session: requests_html.HTMLSession) 
                         if res:
                             results.append((*res, content_type))
 
-
         # URL templates by hostname
         if not results:
             hostname = urlsplit(url).netloc
@@ -335,7 +337,7 @@ def save_fulltext(conn: sqlite3.Connection, session: requests_html.HTMLSession) 
         # Save results
         for result in results:
             try:
-                conn.execute(
+                con.execute(
                     """insert into doi_fulltext values (?, ?, ?, ?, ?, ?, ?)""",
                     (doi, *tuple(result), datetime.now()),
                 )
@@ -343,7 +345,7 @@ def save_fulltext(conn: sqlite3.Connection, session: requests_html.HTMLSession) 
                 # Ignore - this may happen if same content is registered under
                 # multiple content-types, e.g., application/xml and text/xml
                 pass
-        conn.commit()
+        con.commit()
 
 
 def determine_extension(content_type: str, content: bytes) -> str:
@@ -394,13 +396,13 @@ def determine_filename(
 
 
 if __name__ == "__main__":
-    conn = sqlite3.connect("download_extra_DOIs.db")
+    con = sqlite3.connect("download_extra_DOIs.db")
     session = requests_html.HTMLSession()
 
     df = pd.read_excel("analysistable.xlsx")
     df = df.query("score_total >= 8")
 
-    save_metadata(df.DOI.unique(), conn, session)
-    # save_fulltext(conn, session)
+    save_metadata(df.DOI.unique(), con, session)
+    # save_fulltext(con, session)
 
-    # save_to_docs(conn)
+    # save_to_docs(con)
