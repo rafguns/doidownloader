@@ -176,7 +176,7 @@ def retrieve_fulltext(
     ):
         return LookupResult(url, "Time out or connection error", None, None)
     except requests.HTTPError:
-        return LookupResult(r.url, "HTTP error", r.status_code, None)
+        return LookupResult(r.url, "HTTP error", r.status_code, None)  # type: ignore
 
     extension = determine_extension(r.headers.get("content-type"), r.content)
     if extension == expected_ftype:
@@ -286,13 +286,14 @@ def save_fulltext(conn: sqlite3.Connection, session: requests_html.HTMLSession) 
         return d
 
     # XXX Decouple this from doi_meta table
-    for doi, url, error, status_code, meta, last_change in tqdm(cur.fetchall()):
-        results = []
+    for doi, url, error, status_code, meta, _ in tqdm(cur.fetchall()):
+        results: List[tuple] = []
 
         # Direct PDF link
         if error == "Not HTML page" and status_code == 200:
             res = retrieve_fulltext(url, session, expected_ftype="pdf")
-            results.append((*res, "application/pdf"))
+            if res:
+                results.append((*tuple(res), "application/pdf"))
 
         # meta citation_ links
         if not results:
@@ -332,11 +333,11 @@ def save_fulltext(conn: sqlite3.Connection, session: requests_html.HTMLSession) 
                     results.append((*res, "application/pdf"))
 
         # Save results
-        for res in results:
+        for result in results:
             try:
                 conn.execute(
                     """insert into doi_fulltext values (?, ?, ?, ?, ?, ?, ?)""",
-                    (doi, *res, datetime.now()),
+                    (doi, *tuple(result), datetime.now()),
                 )
             except sqlite3.IntegrityError:
                 # Ignore - this may happen if same content is registered under
