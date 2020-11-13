@@ -54,6 +54,10 @@ url_templates = {
     "www.worldscientific.com": ["https://www.worldscientific.com/doi/pdf/{doi}"],
     "www.jstor.org": ["https://www.jstor.org/stable/pdf/{doi}.pdf"],
     "www.emerald.com": ["https://www.emerald.com/insight/content/doi/{doi}/full/pdf"],
+    # Many URLs also have a md5=... argument though it seems to work without as well?
+    "www.sciencedirect.com": [
+        "https://www.sciencedirect.com/science/article/pii/{sdid}/pdfft?pid=1-s2.0-{sdid}-main.pdf"
+    ],
 }
 
 
@@ -267,6 +271,7 @@ def save_fulltext(con: sqlite3.Connection, session: requests_html.HTMLSession) -
             content blob,
             content_type text,
             last_change timestamp,
+            preview integer,
             constraint doi_fulltext_pk primary key (doi, url)
         )
         """
@@ -318,9 +323,15 @@ def save_fulltext(con: sqlite3.Connection, session: requests_html.HTMLSession) -
         # URL templates by hostname
         if not results:
             hostname = urlsplit(url).netloc
+            sdid = ""
+            # ScienceDirect uses ScienceDirect ID in URL instead of DOI
+            if hostname == "www.sciencedirect.com":
+                sdid_match = re.search("/pii/(.+?)?", url)
+                if sdid_match:
+                    sdid = sdid_match.group(1)
             templates = url_templates.get(hostname, [])
             for template in templates:
-                tmpl_url = template.format(doi=quote(doi))
+                tmpl_url = template.format(doi=quote(doi), sdid=sdid)
                 res = retrieve_fulltext(tmpl_url, session, expected_ftype="pdf")
                 if res and res.status_code == 200:
                     results.append((*res, "application/pdf"))
@@ -338,8 +349,9 @@ def save_fulltext(con: sqlite3.Connection, session: requests_html.HTMLSession) -
         for result in results:
             try:
                 con.execute(
-                    """insert into doi_fulltext values (?, ?, ?, ?, ?, ?, ?)""",
-                    (doi, *tuple(result), datetime.now()),
+                    """insert into doi_fulltext values (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    # TODO indicate preview as last variable
+                    (doi, *tuple(result), datetime.now(), 0),
                 )
             except sqlite3.IntegrityError:
                 # Ignore - this may happen if same content is registered under
