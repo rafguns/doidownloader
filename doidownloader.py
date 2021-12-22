@@ -188,7 +188,7 @@ def retrieve_fulltext(
     # ScienceDirect uses *another* interim page here; follow only link, which redirects to
     # the actual PDF
     if "sciencedirect.com" in url and len(r.html.links) == 1:
-        return retrieve_fulltext(r.html.links.pop(), session, expected_ftype, **kwargs)
+        return retrieve_fulltext(r.html.absolute_links.pop(), session, expected_ftype, **kwargs)
 
     return None
 
@@ -307,7 +307,7 @@ def save_fulltext(con: sqlite3.Connection, session: requests_html.HTMLSession) -
                     if url_type not in meta_dict:
                         continue
                     # Filter out empty string URLs
-                    fulltext_urls = {url for url in meta_dict[url_type] if url}
+                    fulltext_urls = {urljoin(url, fulltext_url) for fulltext_url in meta_dict[url_type]}
                     for fulltext_url in fulltext_urls:
                         res = retrieve_fulltext(
                             fulltext_url, session, expected_ftype=file_type
