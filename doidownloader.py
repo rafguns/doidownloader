@@ -12,9 +12,9 @@ from urllib.error import URLError
 from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 from urllib.robotparser import RobotFileParser
 
+import httpx
 import lxml
 import pandas as pd
-import requests
 import requests_html
 from tqdm.auto import tqdm
 
@@ -24,8 +24,8 @@ LookupResult = namedtuple("LookupResult", "url, error, status_code, content")
 crawl_delays: Dict[str, int] = {}
 with open("robots.txt") as fh_robots:
     for line in fh_robots:
-        k, v = line.strip().split()
-        crawl_delays[k] = int(v)
+        domain, delay = line.strip().split()
+        crawl_delays[domain] = int(delay)
 
 
 file_types = [
@@ -59,36 +59,37 @@ url_templates = {
 
 def check_crawl_delay(url: str, default_delay: int = 1) -> int:
     split_url = urlsplit(url)
-    scheme, hostname = split_url.scheme, split_url.netloc
+    scheme, domain = split_url.scheme, split_url.netloc
 
-    if hostname not in crawl_delays:
-        print(f"Checking robots policy for {hostname}")
+    if domain not in crawl_delays:
+        print(f"Checking robots policy for {domain}")
         time.sleep(0.5)
         rp = RobotFileParser()
-        rp.set_url(urlunsplit((scheme, hostname, "/robots.txt", "", "")))
+        rp.set_url(urlunsplit((scheme, domain, "/robots.txt", "", "")))
         try:
             rp.read()
-            crawl_delays[hostname] = int(rp.crawl_delay("*") or default_delay)
+            crawl_delays[domain] = int(rp.crawl_delay("*") or default_delay)
         except (
             AttributeError,
             ConnectionResetError,
-            requests.exceptions.SSLError,
+            httpx.RequestError,
             TimeoutError,
             URLError,
         ):
+            # XXX UPDATE for httpx
             # In case of error, just assume the default. Causes:
             # - AttributeError: no robots.txt
             # - ConnectionResetError: some servers dislike it if we reconnect from a
             #   different session
             # - SSLError/URLError: invalid SSL certificate
-            crawl_delays[hostname] = default_delay
+            crawl_delays[domain] = default_delay
         with open("robots.txt", "a") as fh:
-            fh.write(f"{hostname}\t{crawl_delays[hostname]}\n")
+            fh.write(f"{domain}\t{crawl_delays[domain]}\n")
 
-    return crawl_delays[hostname]
+    return crawl_delays[domain]
 
 
-def resolve_html_redirect(html: requests_html.HTML, base_url: str) -> Optional[str]:
+def resolve_html_redirect(html: requests_html.HTML) -> Optional[str]:
     redirect = html.find(
         'meta[http-equiv="REFRESH"], meta[http-equiv="REFRESH"]', first=True
     )
@@ -102,31 +103,26 @@ def resolve_html_redirect(html: requests_html.HTML, base_url: str) -> Optional[s
         return None
 
     redirect_url = m[1]
-    return urljoin(base_url, redirect_url)
+    return urljoin(html.base_url, redirect_url)
 
 
 def metadata_from_url(
-    url: str, session: requests_html.HTMLSession, **kwargs
+    url: str, client: httpx.Client, **kwargs
 ) -> LookupResult:
     """Retrieve HTML metadata for URL"""
 
     try:
-        r = session.get(url, **kwargs)
-    except requests.exceptions.SSLError:
-        warnings.warn(
-            f"SSL error looking up {url}. Retrying without SSL verification..."
-        )
-        return metadata_from_url(url, session, verify=False, **kwargs)
-    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+        r = client.get(url, follow_redirects=True, **kwargs)
+    except (httpx.ConnectError, httpx.TimeoutException):
         return LookupResult(url, "Time out or connection error", None, None)
     try:
         r.raise_for_status()
-    except requests.HTTPError:
+    except httpx.HTTPStatusError:
         return LookupResult(r.url, "HTTP error", r.status_code, None)
 
     # Retrieve metadata
     try:
-        meta = metadata_from_html(r.html)
+        meta = metadata_from_html(requests_html.HTML(url=r.url, html=r.text))
     except AttributeError:
         return LookupResult(r.url, "Not HTML page", r.status_code, None)
     except lxml.etree.ParserError:
@@ -134,10 +130,9 @@ def metadata_from_url(
 
     # Handle HTML-based redirects, used by Elsevier and possibly others
     if not meta:
-        new_url = resolve_html_redirect(r.html, r.url)
+        new_url = resolve_html_redirect(requests_html.HTML(url=r.url, html=r.text))
         if new_url:
-            # XXX Should return LookupResult here
-            return metadata_from_url(new_url, session, **kwargs)
+            return metadata_from_url(new_url, client, **kwargs)
 
     return LookupResult(r.url, None, r.status_code, json.dumps(meta))
 
@@ -155,7 +150,7 @@ def metadata_from_html(html: requests_html.HTML) -> List[Tuple[str, str]]:
 
 
 def retrieve_fulltext(
-    url: str, session: requests_html.HTMLSession, expected_ftype: str, **kwargs
+    url: str, client: httpx.Client, expected_ftype: str, **kwargs
 ) -> Optional[LookupResult]:
     """Retrieve full-text from URL
 
@@ -165,17 +160,17 @@ def retrieve_fulltext(
 
     """
     try:
-        r = session.get(url, **kwargs)
+        r = client.get(url, follow_redirects=True, **kwargs)
         r.raise_for_status()
-    except requests.exceptions.SSLError:
+    except httpx.TransportError:  # XXX correct?
         return LookupResult(url, "SSL error", None, None)
     except (
-        requests.exceptions.ConnectionError,
-        requests.exceptions.SSLError,
-        requests.exceptions.Timeout,
+        httpx.ConnectError,
+        httpx.TimeoutException
     ):
+        # XXX Code unreachable!!
         return LookupResult(url, "Time out or connection error", None, None)
-    except requests.HTTPError:
+    except httpx.HTTPStatusError:
         return LookupResult(r.url, "HTTP error", r.status_code, None)  # type: ignore
 
     extension = determine_extension(r.headers.get("content-type"), r.content)
@@ -187,20 +182,22 @@ def retrieve_fulltext(
 
     # ScienceDirect uses *another* interim page here; follow only link, which redirects to
     # the actual PDF
-    if "sciencedirect.com" in url and len(r.html.links) == 1:
-        return retrieve_fulltext(r.html.links.pop(), session, expected_ftype, **kwargs)
+    if "sciencedirect.com" in url:
+        links = requests_html.HTML(url=r.url, html=r.text).links
+        if len(links) == 1:
+            return retrieve_fulltext(links.pop(), client, expected_ftype, **kwargs)
 
     return None
 
 
 def best_unpaywall_url(
-    doi: str, session: requests_html.HTMLSession, email: str = "raf.guns@uantwerpen.be"
+    doi: str, client: httpx.Client, email: str = "raf.guns@uantwerpen.be"
 ) -> Optional[str]:
     url = f"https://api.unpaywall.org/v2/{quote(doi)}?email={email}"
-    r = session.get(url)
+    r = client.get(url)
     try:
         r.raise_for_status()
-    except requests.HTTPError as e:
+    except httpx.HTTPStatusError as e:
         warnings.warn(f"Error {e.response.status_code} for url {url}")
         return None
 
@@ -212,7 +209,7 @@ def best_unpaywall_url(
 
 
 def save_metadata(
-    dois: List[str], con: sqlite3.Connection, session: requests_html.HTMLSession
+    dois: List[str], con: sqlite3.Connection, client: httpx.Client
 ) -> None:
     """Retrieve and save metadata for all DOIs"""
     # Field error specifies what kind of error (if any) has occurred
@@ -243,7 +240,7 @@ def save_metadata(
         if doi in inserted_dois:
             continue
         doi_url = "https://doi.org/" + quote(doi)
-        res = metadata_from_url(doi_url, session)
+        res = metadata_from_url(doi_url, client)
 
         cur.execute(
             """insert into doi_meta values (?, ?, ?, ?, ?, ?)""",
@@ -253,7 +250,7 @@ def save_metadata(
         time.sleep(check_crawl_delay(res.url))
 
 
-def save_fulltext(con: sqlite3.Connection, session: requests_html.HTMLSession) -> None:
+def save_fulltext(con: sqlite3.Connection, client: httpx.Client) -> None:
     """Retrieve and save full-text (where available) of all DOIs in table doi_meta"""
     cur = con.cursor()
     cur.execute(
@@ -294,7 +291,7 @@ def save_fulltext(con: sqlite3.Connection, session: requests_html.HTMLSession) -
 
         # Direct PDF link
         if error == "Not HTML page" and status_code == 200:
-            res = retrieve_fulltext(url, session, expected_ftype="pdf")
+            res = retrieve_fulltext(url, client, expected_ftype="pdf")
             if res:
                 results.append((*tuple(res), "application/pdf"))
 
@@ -310,7 +307,7 @@ def save_fulltext(con: sqlite3.Connection, session: requests_html.HTMLSession) -
                     fulltext_urls = {url for url in meta_dict[url_type] if url}
                     for fulltext_url in fulltext_urls:
                         res = retrieve_fulltext(
-                            fulltext_url, session, expected_ftype=file_type
+                            fulltext_url, client, expected_ftype=file_type
                         )
                         if res:
                             results.append((*res, content_type))
@@ -321,16 +318,16 @@ def save_fulltext(con: sqlite3.Connection, session: requests_html.HTMLSession) -
             templates = url_templates.get(hostname, [])
             for template in templates:
                 tmpl_url = template.format(doi=quote(doi))
-                res = retrieve_fulltext(tmpl_url, session, expected_ftype="pdf")
+                res = retrieve_fulltext(tmpl_url, client, expected_ftype="pdf")
                 if res and res.status_code == 200:
                     results.append((*res, "application/pdf"))
                     break
 
         # Unpaywall
         if not results:
-            unpaywall_url = best_unpaywall_url(doi, session)
+            unpaywall_url = best_unpaywall_url(doi, client)
             if unpaywall_url:
-                res = retrieve_fulltext(unpaywall_url, session, expected_ftype="pdf")
+                res = retrieve_fulltext(unpaywall_url, client, expected_ftype="pdf")
                 if res and res.status_code == 200:
                     results.append((*res, "application/pdf"))
 
@@ -396,13 +393,12 @@ def determine_filename(
 
 
 if __name__ == "__main__":
-    con = sqlite3.connect("download_extra_DOIs.db")
-    session = requests_html.HTMLSession()
+    connection = sqlite3.connect("download_extra_DOIs.db")
 
     df = pd.read_excel("analysistable.xlsx")
     df = df.query("score_total >= 8")
 
-    save_metadata(df.DOI.unique(), con, session)
-    # save_fulltext(con, session)
-
-    # save_to_docs(con)
+    with httpx.Client as http_client:
+        save_metadata(df.DOI.unique(), connection, http_client)
+        # save_fulltext(connection, http_client)
+        # save_to_docs(connection)
