@@ -8,8 +8,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
-from urllib.error import URLError
-from urllib.parse import quote, urljoin, urlsplit, urlunsplit
+from urllib.parse import quote, urljoin, urlsplit
 from urllib.robotparser import RobotFileParser
 
 import httpx
@@ -84,32 +83,20 @@ def lookup_result_on_http_error(exception: httpx.HTTPError) -> LookupResult:
     return LookupResult(exception.request.url, error, status_code)
 
 
-def check_crawl_delay(url: str, default_delay: int = 1) -> int:
-    split_url = urlsplit(url)
-    scheme, domain = split_url.scheme, split_url.netloc
+def check_crawl_delay(url: httpx.URL, client: httpx.Client, default_delay: int = 1) -> int:
+    domain = url.netloc.decode("utf-8")
 
     if domain not in crawl_delays:
         print(f"Checking robots policy for {domain}")
-        time.sleep(0.5)
-        rp = RobotFileParser()
-        rp.set_url(urlunsplit((scheme, domain, "/robots.txt", "", "")))
+
         try:
-            rp.read()
+            r = client.get(url, follow_redirects=True)
+            r.raise_for_status()
+
+            rp = RobotFileParser()
+            rp.parse((line for line in r.text))
             crawl_delays[domain] = int(rp.crawl_delay("*") or default_delay)
-        except (
-            AttributeError,
-            ConnectionResetError,
-            httpx.RequestError,
-            UnicodeDecodeError,
-            URLError,
-        ):
-            # In case of error, just assume the default. Causes:
-            # - AttributeError: no robots.txt
-            # - ConnectionResetError: some servers dislike it if we reconnect from a
-            #   different session
-            # - URLError: invalid SSL certificate
-            # - httpx.RequestError: base error raised by httpx (time outs, etc.)
-            # - UnicodeDecodeError: no robots.txt (we got a non-UTF8 HTML page instead)
+        except (httpx.HTTPError, AttributeError):  # HTTP error or no robots.txt
             crawl_delays[domain] = default_delay
         with open("robots.txt", "a") as fh:
             fh.write(f"{domain}\t{crawl_delays[domain]}\n")
@@ -261,7 +248,7 @@ def save_metadata(
             (doi, *res.as_tuple(), datetime.now()),
         )
         con.commit()
-        time.sleep(check_crawl_delay(str(res.url)))
+        time.sleep(check_crawl_delay(res.url, client))
 
 
 def save_fulltext(con: sqlite3.Connection, client: httpx.Client) -> None:
