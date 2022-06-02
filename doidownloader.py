@@ -73,6 +73,17 @@ def response_to_html(response: httpx.Response) -> requests_html.HTML:
     return requests_html.HTML(url=str(response.url), html=response.content)
 
 
+def lookup_result_on_http_error(exception: httpx.HTTPError) -> LookupResult:
+    error = f"HTTP error: {exception}"
+    status_code = (
+        exception.response.status_code
+        if isinstance(exception, httpx.HTTPStatusError)
+        else None
+    )
+
+    return LookupResult(exception.request.url, error, status_code)
+
+
 def check_crawl_delay(url: str, default_delay: int = 1) -> int:
     split_url = urlsplit(url)
     scheme, domain = split_url.scheme, split_url.netloc
@@ -89,15 +100,14 @@ def check_crawl_delay(url: str, default_delay: int = 1) -> int:
             AttributeError,
             ConnectionResetError,
             httpx.RequestError,
-            TimeoutError,
             URLError,
         ):
-            # XXX UPDATE for httpx
             # In case of error, just assume the default. Causes:
             # - AttributeError: no robots.txt
             # - ConnectionResetError: some servers dislike it if we reconnect from a
             #   different session
-            # - SSLError/URLError: invalid SSL certificate
+            # - URLError: invalid SSL certificate
+            # - httpx.RequestError: base error raised by httpx (time outs, etc.)
             crawl_delays[domain] = default_delay
         with open("robots.txt", "a") as fh:
             fh.write(f"{domain}\t{crawl_delays[domain]}\n")
@@ -127,12 +137,9 @@ def metadata_from_url(url: str, client: httpx.Client, **kwargs) -> LookupResult:
 
     try:
         r = client.get(url, follow_redirects=True, **kwargs)
-    except (httpx.ConnectError, httpx.TimeoutException):
-        return LookupResult(r.url, "Time out or connection error")
-    try:
         r.raise_for_status()
-    except httpx.HTTPStatusError:
-        return LookupResult(r.url, "HTTP error", r.status_code)
+    except httpx.HTTPError as exc:
+        return lookup_result_on_http_error(exc)
 
     # Retrieve metadata
     try:
@@ -176,12 +183,8 @@ def retrieve_fulltext(
     try:
         r = client.get(url, follow_redirects=True, **kwargs)
         r.raise_for_status()
-    # except httpx.TransportError:  # XXX correct?
-    #    return LookupResult(r.url, "SSL error", None, None)
-    except (httpx.ConnectError, httpx.TimeoutException):
-        return LookupResult(r.url, "Time out or connection error")
-    except httpx.HTTPStatusError:
-        return LookupResult(r.url, "HTTP error", r.status_code)
+    except httpx.HTTPError as exc:
+        return lookup_result_on_http_error(exc)
 
     extension = determine_extension(r.headers.get("content-type"), r.content)
     if extension == expected_ftype:
