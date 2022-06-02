@@ -4,7 +4,6 @@ import os
 import re
 import sqlite3
 import time
-import warnings
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
@@ -208,8 +207,7 @@ def best_unpaywall_url(
     r = client.get(url)
     try:
         r.raise_for_status()
-    except httpx.HTTPStatusError as e:
-        warnings.warn(f"Error {e.response.status_code} for url {url}")
+    except httpx.HTTPStatusError:
         return None
 
     data = r.json()
