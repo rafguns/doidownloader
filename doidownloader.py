@@ -5,7 +5,8 @@ import re
 import sqlite3
 import time
 import warnings
-from collections import defaultdict, namedtuple
+from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 from urllib.error import URLError
@@ -18,7 +19,6 @@ import pandas as pd
 import requests_html
 from tqdm.auto import tqdm
 
-LookupResult = namedtuple("LookupResult", "url, error, status_code, content")
 # Prefill a few publishers where we encountered problems due to missing or
 # incorrect robots.txt
 crawl_delays: Dict[str, int] = {}
@@ -55,6 +55,23 @@ url_templates = {
     "www.jstor.org": ["https://www.jstor.org/stable/pdf/{doi}.pdf"],
     "www.emerald.com": ["https://www.emerald.com/insight/content/doi/{doi}/full/pdf"],
 }
+
+
+@dataclass(frozen=True)
+class LookupResult:
+    """Result of an HTTP request"""
+
+    url: httpx.URL
+    error: Optional[str] = None
+    status_code: Optional[int] = None
+    content: Optional[bytes] = None
+
+    def as_tuple(self) -> tuple:
+        return (str(self.url), self.error, self.status_code, self.content)
+
+
+def response_to_html(response: httpx.Response) -> requests_html.HTML:
+    return requests_html.HTML(url=str(response.url), html=response.content)
 
 
 def check_crawl_delay(url: str, default_delay: int = 1) -> int:
@@ -106,35 +123,33 @@ def resolve_html_redirect(html: requests_html.HTML) -> Optional[str]:
     return urljoin(html.base_url, redirect_url)
 
 
-def metadata_from_url(
-    url: str, client: httpx.Client, **kwargs
-) -> LookupResult:
+def metadata_from_url(url: str, client: httpx.Client, **kwargs) -> LookupResult:
     """Retrieve HTML metadata for URL"""
 
     try:
         r = client.get(url, follow_redirects=True, **kwargs)
     except (httpx.ConnectError, httpx.TimeoutException):
-        return LookupResult(url, "Time out or connection error", None, None)
+        return LookupResult(r.url, "Time out or connection error")
     try:
         r.raise_for_status()
     except httpx.HTTPStatusError:
-        return LookupResult(r.url, "HTTP error", r.status_code, None)
+        return LookupResult(r.url, "HTTP error", r.status_code)
 
     # Retrieve metadata
     try:
-        meta = metadata_from_html(requests_html.HTML(url=r.url, html=r.text))
+        meta = metadata_from_html(response_to_html(r))
     except AttributeError:
-        return LookupResult(r.url, "Not HTML page", r.status_code, None)
+        return LookupResult(r.url, "Not HTML page", r.status_code)
     except lxml.etree.ParserError:
-        return LookupResult(r.url, "Empty or unparseable page", r.status_code, None)
+        return LookupResult(r.url, "Empty or unparseable page", r.status_code)
 
     # Handle HTML-based redirects, used by Elsevier and possibly others
     if not meta:
-        new_url = resolve_html_redirect(requests_html.HTML(url=r.url, html=r.text))
+        new_url = resolve_html_redirect(response_to_html(r))
         if new_url:
             return metadata_from_url(new_url, client, **kwargs)
 
-    return LookupResult(r.url, None, r.status_code, json.dumps(meta))
+    return LookupResult(r.url, None, r.status_code, json.dumps(meta).encode("utf-8"))
 
 
 def metadata_from_html(html: requests_html.HTML) -> List[Tuple[str, str]]:
@@ -162,16 +177,12 @@ def retrieve_fulltext(
     try:
         r = client.get(url, follow_redirects=True, **kwargs)
         r.raise_for_status()
-    except httpx.TransportError:  # XXX correct?
-        return LookupResult(url, "SSL error", None, None)
-    except (
-        httpx.ConnectError,
-        httpx.TimeoutException
-    ):
-        # XXX Code unreachable!!
-        return LookupResult(url, "Time out or connection error", None, None)
+    # except httpx.TransportError:  # XXX correct?
+    #    return LookupResult(r.url, "SSL error", None, None)
+    except (httpx.ConnectError, httpx.TimeoutException):
+        return LookupResult(r.url, "Time out or connection error")
     except httpx.HTTPStatusError:
-        return LookupResult(r.url, "HTTP error", r.status_code, None)  # type: ignore
+        return LookupResult(r.url, "HTTP error", r.status_code)
 
     extension = determine_extension(r.headers.get("content-type"), r.content)
     if extension == expected_ftype:
@@ -183,7 +194,7 @@ def retrieve_fulltext(
     # ScienceDirect uses *another* interim page here; follow only link, which redirects to
     # the actual PDF
     if "sciencedirect.com" in url:
-        links = requests_html.HTML(url=r.url, html=r.text).links
+        links = response_to_html(r).links
         if len(links) == 1:
             return retrieve_fulltext(links.pop(), client, expected_ftype, **kwargs)
 
@@ -244,10 +255,10 @@ def save_metadata(
 
         cur.execute(
             """insert into doi_meta values (?, ?, ?, ?, ?, ?)""",
-            (doi, *res, datetime.now()),
+            (doi, *res.as_tuple(), datetime.now()),
         )
         con.commit()
-        time.sleep(check_crawl_delay(res.url))
+        time.sleep(check_crawl_delay(str(res.url)))
 
 
 def save_fulltext(con: sqlite3.Connection, client: httpx.Client) -> None:
@@ -293,7 +304,7 @@ def save_fulltext(con: sqlite3.Connection, client: httpx.Client) -> None:
         if error == "Not HTML page" and status_code == 200:
             res = retrieve_fulltext(url, client, expected_ftype="pdf")
             if res:
-                results.append((*tuple(res), "application/pdf"))
+                results.append((*res.as_tuple(), "application/pdf"))
 
         # meta citation_ links
         if not results:
@@ -310,7 +321,7 @@ def save_fulltext(con: sqlite3.Connection, client: httpx.Client) -> None:
                             fulltext_url, client, expected_ftype=file_type
                         )
                         if res:
-                            results.append((*res, content_type))
+                            results.append((*res.as_tuple(), content_type))
 
         # URL templates by hostname
         if not results:
@@ -320,7 +331,7 @@ def save_fulltext(con: sqlite3.Connection, client: httpx.Client) -> None:
                 tmpl_url = template.format(doi=quote(doi))
                 res = retrieve_fulltext(tmpl_url, client, expected_ftype="pdf")
                 if res and res.status_code == 200:
-                    results.append((*res, "application/pdf"))
+                    results.append((*res.as_tuple(), "application/pdf"))
                     break
 
         # Unpaywall
@@ -329,14 +340,14 @@ def save_fulltext(con: sqlite3.Connection, client: httpx.Client) -> None:
             if unpaywall_url:
                 res = retrieve_fulltext(unpaywall_url, client, expected_ftype="pdf")
                 if res and res.status_code == 200:
-                    results.append((*res, "application/pdf"))
+                    results.append((*res.as_tuple(), "application/pdf"))
 
         # Save results
         for result in results:
             try:
                 con.execute(
                     """insert into doi_fulltext values (?, ?, ?, ?, ?, ?, ?)""",
-                    (doi, *tuple(result), datetime.now()),
+                    (doi, *result, datetime.now()),
                 )
             except sqlite3.IntegrityError:
                 # Ignore - this may happen if same content is registered under
@@ -369,7 +380,7 @@ def same_contents(fname: str, bytestring: bytes) -> bool:
 
 
 class FileWithSameContentExists(Exception):
-    pass
+    """Exception: a file with the same contents already exists"""
 
 
 def determine_filename(
@@ -398,7 +409,8 @@ if __name__ == "__main__":
     df = pd.read_excel("analysistable.xlsx")
     df = df.query("score_total >= 8")
 
-    with httpx.Client as http_client:
+    # Shut up incorrect warning "Type[Client]" has no attribute "__enter__"
+    with httpx.Client as http_client:  # type: ignore
         save_metadata(df.DOI.unique(), connection, http_client)
         # save_fulltext(connection, http_client)
         # save_to_docs(connection)
