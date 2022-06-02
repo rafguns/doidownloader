@@ -100,6 +100,7 @@ def check_crawl_delay(url: str, default_delay: int = 1) -> int:
             AttributeError,
             ConnectionResetError,
             httpx.RequestError,
+            UnicodeDecodeError,
             URLError,
         ):
             # In case of error, just assume the default. Causes:
@@ -108,6 +109,7 @@ def check_crawl_delay(url: str, default_delay: int = 1) -> int:
             #   different session
             # - URLError: invalid SSL certificate
             # - httpx.RequestError: base error raised by httpx (time outs, etc.)
+            # - UnicodeDecodeError: no robots.txt (we got a non-UTF8 HTML page instead)
             crawl_delays[domain] = default_delay
         with open("robots.txt", "a") as fh:
             fh.write(f"{domain}\t{crawl_delays[domain]}\n")
