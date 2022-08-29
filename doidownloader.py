@@ -79,6 +79,50 @@ class DOIDownloader:
     def __exit__(self, ecx_type, ecx_value, traceback):
         self.client.__exit__(ecx_type, ecx_value, traceback)
 
+    @staticmethod
+    def response_to_html(response: httpx.Response) -> requests_html.HTML:
+        return requests_html.HTML(url=str(response.url), html=response.content)
+
+    @staticmethod
+    def lookup_result_on_http_error(exception: httpx.HTTPError) -> LookupResult:
+        error = f"HTTP error: {exception}"
+        status_code = (
+            exception.response.status_code
+            if isinstance(exception, httpx.HTTPStatusError)
+            else None
+        )
+
+        return LookupResult(exception.request.url, error, status_code)
+
+    @staticmethod
+    def resolve_html_redirect(html: requests_html.HTML) -> Optional[str]:
+        redirect = html.find(
+            'meta[http-equiv="REFRESH"], meta[http-equiv="REFRESH"]', first=True
+        )
+        if not redirect:
+            return None
+
+        m = re.search(
+            r'url\s*=\s*[\'"](.*?)[\'"]', redirect.attrs.get("content"), re.IGNORECASE
+        )
+        if not m:
+            return None
+
+        redirect_url = m[1]
+        return urljoin(html.base_url, redirect_url)
+
+    @staticmethod
+    def metadata_from_html(html: requests_html.HTML) -> List[Tuple[str, str]]:
+        """Return all Google Scholar and Dublin Core meta info"""
+        meta_els = html.find(
+            'meta[name^="citation_"], meta[name^="dc."], meta[name^="DC."]'
+        )
+        return [
+            (el.attrs["name"], el.attrs["content"])
+            for el in meta_els
+            if "content" in el.attrs
+        ]
+
     def metadata_from_url(self, url: str, **kwargs) -> LookupResult:
         """Retrieve HTML metadata for URL"""
 
@@ -86,11 +130,11 @@ class DOIDownloader:
             r = self.client.get(url, follow_redirects=True, **kwargs)
             r.raise_for_status()
         except httpx.HTTPError as exc:
-            return lookup_result_on_http_error(exc)
+            return self.lookup_result_on_http_error(exc)
 
         # Retrieve metadata
         try:
-            meta = metadata_from_html(response_to_html(r))
+            meta = self.metadata_from_html(self.response_to_html(r))
         except AttributeError:
             return LookupResult(r.url, "Not HTML page", r.status_code)
         except lxml.etree.ParserError:
@@ -98,7 +142,7 @@ class DOIDownloader:
 
         # Handle HTML-based redirects, used by Elsevier and possibly others
         if not meta:
-            new_url = resolve_html_redirect(response_to_html(r))
+            new_url = self.resolve_html_redirect(self.response_to_html(r))
             if new_url:
                 return self.metadata_from_url(new_url, **kwargs)
 
@@ -140,7 +184,7 @@ class DOIDownloader:
             r = self.client.get(url, follow_redirects=True, **kwargs)
             r.raise_for_status()
         except httpx.HTTPError as exc:
-            return lookup_result_on_http_error(exc)
+            return self.lookup_result_on_http_error(exc)
 
         extension = determine_extension(r.headers.get("content-type"), r.content)
         if extension == expected_ftype:
@@ -152,7 +196,7 @@ class DOIDownloader:
         # ScienceDirect uses *another* interim page here; follow only link, which redirects to
         # the actual PDF
         if "sciencedirect.com" in url:
-            links = response_to_html(r).links
+            links = self.response_to_html(r).links
             if len(links) == 1:
                 return self.retrieve_fulltext(links.pop(), expected_ftype, **kwargs)
 
@@ -173,50 +217,6 @@ class DOIDownloader:
             return None
 
         return data["best_oa_location"]["url"]
-
-
-def response_to_html(response: httpx.Response) -> requests_html.HTML:
-    return requests_html.HTML(url=str(response.url), html=response.content)
-
-
-def lookup_result_on_http_error(exception: httpx.HTTPError) -> LookupResult:
-    error = f"HTTP error: {exception}"
-    status_code = (
-        exception.response.status_code
-        if isinstance(exception, httpx.HTTPStatusError)
-        else None
-    )
-
-    return LookupResult(exception.request.url, error, status_code)
-
-
-def resolve_html_redirect(html: requests_html.HTML) -> Optional[str]:
-    redirect = html.find(
-        'meta[http-equiv="REFRESH"], meta[http-equiv="REFRESH"]', first=True
-    )
-    if not redirect:
-        return None
-
-    m = re.search(
-        r'url\s*=\s*[\'"](.*?)[\'"]', redirect.attrs.get("content"), re.IGNORECASE
-    )
-    if not m:
-        return None
-
-    redirect_url = m[1]
-    return urljoin(html.base_url, redirect_url)
-
-
-def metadata_from_html(html: requests_html.HTML) -> List[Tuple[str, str]]:
-    """Return all Google Scholar and Dublin Core meta info"""
-    meta_els = html.find(
-        'meta[name^="citation_"], meta[name^="dc."], meta[name^="DC."]'
-    )
-    return [
-        (el.attrs["name"], el.attrs["content"])
-        for el in meta_els
-        if "content" in el.attrs
-    ]
 
 
 def save_metadata(
