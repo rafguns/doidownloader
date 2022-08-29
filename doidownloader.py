@@ -7,7 +7,7 @@ import time
 import warnings
 from collections import defaultdict, namedtuple
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 from urllib.error import URLError
 from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 from urllib.robotparser import RobotFileParser
@@ -136,7 +136,6 @@ def metadata_from_url(
     if not meta:
         new_url = resolve_html_redirect(r.html, r.url)
         if new_url:
-            # XXX Should return LookupResult here
             return metadata_from_url(new_url, session, **kwargs)
 
     return LookupResult(r.url, None, r.status_code, json.dumps(meta))
@@ -188,7 +187,9 @@ def retrieve_fulltext(
     # ScienceDirect uses *another* interim page here; follow only link, which redirects to
     # the actual PDF
     if "sciencedirect.com" in url and len(r.html.links) == 1:
-        return retrieve_fulltext(r.html.absolute_links.pop(), session, expected_ftype, **kwargs)
+        return retrieve_fulltext(
+            r.html.absolute_links.pop(), session, expected_ftype, **kwargs
+        )
 
     return None
 
@@ -281,71 +282,69 @@ def save_fulltext(con: sqlite3.Connection, session: requests_html.HTMLSession) -
         """
     )
 
-    # Small utility function used further
-    def list2dict(l):
-        d = defaultdict(set)
-        for k, v in l:
-            d[k].add(v)
-        return d
-
-    # XXX Decouple this from doi_meta table
     for doi, url, error, status_code, meta, _ in tqdm(cur.fetchall()):
-        results: List[tuple] = []
-
-        # Direct PDF link
-        if error == "Not HTML page" and status_code == 200:
-            res = retrieve_fulltext(url, session, expected_ftype="pdf")
-            if res:
-                results.append((*tuple(res), "application/pdf"))
-
-        # meta citation_ links
-        if not results:
-            if meta:
-                meta_info = json.loads(meta)
-                meta_dict = list2dict(meta_info)
-                for file_type, content_type, url_type in file_types:
-                    if url_type not in meta_dict:
-                        continue
-                    # Filter out empty string URLs
-                    fulltext_urls = {urljoin(url, fulltext_url) for fulltext_url in meta_dict[url_type]}
-                    for fulltext_url in fulltext_urls:
-                        res = retrieve_fulltext(
-                            fulltext_url, session, expected_ftype=file_type
-                        )
-                        if res:
-                            results.append((*res, content_type))
-
-        # URL templates by hostname
-        if not results:
-            hostname = urlsplit(url).netloc
-            templates = url_templates.get(hostname, [])
-            for template in templates:
-                tmpl_url = template.format(doi=quote(doi))
-                res = retrieve_fulltext(tmpl_url, session, expected_ftype="pdf")
-                if res and res.status_code == 200:
-                    results.append((*res, "application/pdf"))
-                    break
-
-        # Unpaywall
-        if not results:
-            unpaywall_url = best_unpaywall_url(doi, session)
-            if unpaywall_url:
-                res = retrieve_fulltext(unpaywall_url, session, expected_ftype="pdf")
-                if res and res.status_code == 200:
-                    results.append((*res, "application/pdf"))
-
-        # Save results
-        for result in results:
+        for result in retrieve_best_fulltexts(doi, url, error, status_code, meta):
             try:
                 con.execute(
                     """insert into doi_fulltext values (?, ?, ?, ?, ?, ?, ?)""",
-                    (doi, *tuple(result), datetime.now()),
+                    (doi, *result, datetime.now()),
                 )
             except sqlite3.IntegrityError:
                 # Ignore - this may happen if same content is registered under
                 # multiple content-types, e.g., application/xml and text/xml
                 pass
         con.commit()
+
+
+def _list2dict(l):
+    d = defaultdict(set)
+    for k, v in l:
+        d[k].add(v)
+    return d
+
+
+def retrieve_best_fulltexts(
+    doi: str, url: str, error: str, status_code: int, meta: str
+) -> Iterable[tuple]:
+    # Direct PDF link
+    if error == "Not HTML page" and status_code == 200:
+        res = retrieve_fulltext(url, session, expected_ftype="pdf")
+        if res:
+            yield (*res, "application/pdf")
+            return
+
+    # meta citation_ links
+    if meta:
+        meta_info = json.loads(meta)
+        meta_dict = _list2dict(meta_info)
+        for file_type, content_type, url_type in file_types:
+            if url_type not in meta_dict:
+                continue
+            # Filter out empty string URLs
+            fulltext_urls = {url for url in meta_dict[url_type] if url}
+            for fulltext_url in fulltext_urls:
+                res = retrieve_fulltext(fulltext_url, session, expected_ftype=file_type)
+                if res:
+                    yield (*res, content_type)
+        # XXX This may return with empty results
+        return
+
+    # URL templates by hostname
+    hostname = urlsplit(url).netloc
+    templates = url_templates.get(hostname, [])
+    for template in templates:
+        tmpl_url = template.format(doi=quote(doi))
+        res = retrieve_fulltext(tmpl_url, session, expected_ftype="pdf")
+        if res and res.status_code == 200:
+            yield (*res, "application/pdf")
+            return
+
+    # Unpaywall
+    unpaywall_url = best_unpaywall_url(doi, session)
+    if unpaywall_url:
+        res = retrieve_fulltext(unpaywall_url, session, expected_ftype="pdf")
+        if res and res.status_code == 200:
+            yield (*res, "application/pdf")
 
 
 def determine_extension(content_type: str, content: bytes) -> str:
