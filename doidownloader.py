@@ -68,6 +68,113 @@ class LookupResult:
         return (str(self.url), self.error, self.status_code, self.content)
 
 
+class DOIDownloader:
+    def __init__(self, client: Optional[httpx.Client] = None):
+        self.client = client or httpx.Client()
+
+    def __enter__(self):
+        self.client.__enter__()
+        return self
+
+    def __exit__(self, ecx_type, ecx_value, traceback):
+        self.client.__exit__(ecx_type, ecx_value, traceback)
+
+    def metadata_from_url(self, url: str, **kwargs) -> LookupResult:
+        """Retrieve HTML metadata for URL"""
+
+        try:
+            r = self.client.get(url, follow_redirects=True, **kwargs)
+            r.raise_for_status()
+        except httpx.HTTPError as exc:
+            return lookup_result_on_http_error(exc)
+
+        # Retrieve metadata
+        try:
+            meta = metadata_from_html(response_to_html(r))
+        except AttributeError:
+            return LookupResult(r.url, "Not HTML page", r.status_code)
+        except lxml.etree.ParserError:
+            return LookupResult(r.url, "Empty or unparseable page", r.status_code)
+
+        # Handle HTML-based redirects, used by Elsevier and possibly others
+        if not meta:
+            new_url = resolve_html_redirect(response_to_html(r))
+            if new_url:
+                return self.metadata_from_url(new_url, **kwargs)
+
+        return LookupResult(
+            r.url, None, r.status_code, json.dumps(meta).encode("utf-8")
+        )
+
+    def check_crawl_delay(self, url: httpx.URL, default_delay: int = 1) -> int:
+        domain = url.netloc.decode("utf-8")
+
+        if domain not in crawl_delays:
+            print(f"Checking robots policy for {domain}")
+
+            try:
+                r = self.client.get(url, follow_redirects=True)
+                r.raise_for_status()
+
+                rp = RobotFileParser()
+                rp.parse((line for line in r.text))
+                crawl_delays[domain] = int(rp.crawl_delay("*") or default_delay)
+            except (httpx.HTTPError, AttributeError):  # HTTP error or no robots.txt
+                crawl_delays[domain] = default_delay
+            with open("robots.txt", "a") as fh:
+                fh.write(f"{domain}\t{crawl_delays[domain]}\n")
+
+        return crawl_delays[domain]
+
+    def retrieve_fulltext(
+        self, url: str, expected_ftype: str, **kwargs
+    ) -> Optional[LookupResult]:
+        """Retrieve full-text from URL
+
+        This only returns the full-text if the file type matches what was expected.
+        The reason for that is that some servers return web pages with 'Not found' on them,
+        but with status code 200.
+
+        """
+        try:
+            r = self.client.get(url, follow_redirects=True, **kwargs)
+            r.raise_for_status()
+        except httpx.HTTPError as exc:
+            return lookup_result_on_http_error(exc)
+
+        extension = determine_extension(r.headers.get("content-type"), r.content)
+        if extension == expected_ftype:
+            return LookupResult(r.url, None, r.status_code, r.content)
+
+        # Type is different from what we expected. Typically this is some HTML page being shown
+        # instead of the desired content.
+
+        # ScienceDirect uses *another* interim page here; follow only link, which redirects to
+        # the actual PDF
+        if "sciencedirect.com" in url:
+            links = response_to_html(r).links
+            if len(links) == 1:
+                return self.retrieve_fulltext(links.pop(), expected_ftype, **kwargs)
+
+        return None
+
+    def best_unpaywall_url(
+        self, doi: str, email: str = "raf.guns@uantwerpen.be"
+    ) -> Optional[str]:
+        url = f"https://api.unpaywall.org/v2/{quote(doi)}?email={email}"
+        r = self.client.get(url)
+        try:
+            r.raise_for_status()
+        except httpx.HTTPStatusError:
+            return None
+
+        data = r.json()
+        if not data["is_oa"]:
+            return None
+
+        return data["best_oa_location"]["url"]
+
+
 def response_to_html(response: httpx.Response) -> requests_html.HTML:
     return requests_html.HTML(url=str(response.url), html=response.content)
 
@@ -81,27 +188,6 @@ def lookup_result_on_http_error(exception: httpx.HTTPError) -> LookupResult:
     )
 
     return LookupResult(exception.request.url, error, status_code)
-
-
-def check_crawl_delay(url: httpx.URL, client: httpx.Client, default_delay: int = 1) -> int:
-    domain = url.netloc.decode("utf-8")
-
-    if domain not in crawl_delays:
-        print(f"Checking robots policy for {domain}")
-
-        try:
-            r = client.get(url, follow_redirects=True)
-            r.raise_for_status()
-
-            rp = RobotFileParser()
-            rp.parse((line for line in r.text))
-            crawl_delays[domain] = int(rp.crawl_delay("*") or default_delay)
-        except (httpx.HTTPError, AttributeError):  # HTTP error or no robots.txt
-            crawl_delays[domain] = default_delay
-        with open("robots.txt", "a") as fh:
-            fh.write(f"{domain}\t{crawl_delays[domain]}\n")
-
-    return crawl_delays[domain]
 
 
 def resolve_html_redirect(html: requests_html.HTML) -> Optional[str]:
@@ -121,32 +207,6 @@ def resolve_html_redirect(html: requests_html.HTML) -> Optional[str]:
     return urljoin(html.base_url, redirect_url)
 
 
-def metadata_from_url(url: str, client: httpx.Client, **kwargs) -> LookupResult:
-    """Retrieve HTML metadata for URL"""
-
-    try:
-        r = client.get(url, follow_redirects=True, **kwargs)
-        r.raise_for_status()
-    except httpx.HTTPError as exc:
-        return lookup_result_on_http_error(exc)
-
-    # Retrieve metadata
-    try:
-        meta = metadata_from_html(response_to_html(r))
-    except AttributeError:
-        return LookupResult(r.url, "Not HTML page", r.status_code)
-    except lxml.etree.ParserError:
-        return LookupResult(r.url, "Empty or unparseable page", r.status_code)
-
-    # Handle HTML-based redirects, used by Elsevier and possibly others
-    if not meta:
-        new_url = resolve_html_redirect(response_to_html(r))
-        if new_url:
-            return metadata_from_url(new_url, client, **kwargs)
-
-    return LookupResult(r.url, None, r.status_code, json.dumps(meta).encode("utf-8"))
-
-
 def metadata_from_html(html: requests_html.HTML) -> List[Tuple[str, str]]:
     """Return all Google Scholar and Dublin Core meta info"""
     meta_els = html.find(
@@ -159,58 +219,8 @@ def metadata_from_html(html: requests_html.HTML) -> List[Tuple[str, str]]:
     ]
 
 
-def retrieve_fulltext(
-    url: str, client: httpx.Client, expected_ftype: str, **kwargs
-) -> Optional[LookupResult]:
-    """Retrieve full-text from URL
-
-    This only returns the full-text if the file type matches what was expected.
-    The reason for that is that some servers return web pages with 'Not found' on them,
-    but with status code 200.
-
-    """
-    try:
-        r = client.get(url, follow_redirects=True, **kwargs)
-        r.raise_for_status()
-    except httpx.HTTPError as exc:
-        return lookup_result_on_http_error(exc)
-
-    extension = determine_extension(r.headers.get("content-type"), r.content)
-    if extension == expected_ftype:
-        return LookupResult(r.url, None, r.status_code, r.content)
-
-    # Type is different from what we expected. Typically this is some HTML page being shown
-    # instead of the desired content.
-
-    # ScienceDirect uses *another* interim page here; follow only link, which redirects to
-    # the actual PDF
-    if "sciencedirect.com" in url:
-        links = response_to_html(r).links
-        if len(links) == 1:
-            return retrieve_fulltext(links.pop(), client, expected_ftype, **kwargs)
-
-    return None
-
-
-def best_unpaywall_url(
-    doi: str, client: httpx.Client, email: str = "raf.guns@uantwerpen.be"
-) -> Optional[str]:
-    url = f"https://api.unpaywall.org/v2/{quote(doi)}?email={email}"
-    r = client.get(url)
-    try:
-        r.raise_for_status()
-    except httpx.HTTPStatusError:
-        return None
-
-    data = r.json()
-    if not data["is_oa"]:
-        return None
-
-    return data["best_oa_location"]["url"]
-
-
 def save_metadata(
-    dois: List[str], con: sqlite3.Connection, client: httpx.Client
+    dois: List[str], con: sqlite3.Connection, client: DOIDownloader
 ) -> None:
     """Retrieve and save metadata for all DOIs"""
     # Field error specifies what kind of error (if any) has occurred
@@ -241,17 +251,17 @@ def save_metadata(
         if doi in inserted_dois:
             continue
         doi_url = "https://doi.org/" + quote(doi)
-        res = metadata_from_url(doi_url, client)
+        res = client.metadata_from_url(doi_url)
 
         cur.execute(
             """insert into doi_meta values (?, ?, ?, ?, ?, ?)""",
             (doi, *res.as_tuple(), datetime.now()),
         )
         con.commit()
-        time.sleep(check_crawl_delay(res.url, client))
+        time.sleep(client.check_crawl_delay(res.url))
 
 
-def save_fulltext(con: sqlite3.Connection, client: httpx.Client) -> None:
+def save_fulltext(con: sqlite3.Connection, client: DOIDownloader) -> None:
     """Retrieve and save full-text (where available) of all DOIs in table doi_meta"""
     cur = con.cursor()
     cur.execute(
@@ -280,7 +290,9 @@ def save_fulltext(con: sqlite3.Connection, client: httpx.Client) -> None:
     )
 
     for doi, url, error, status_code, meta, _ in tqdm(cur.fetchall()):
-        for result in retrieve_best_fulltexts(client, doi, url, error, status_code, meta):
+        for result in retrieve_best_fulltexts(
+            client, doi, url, error, status_code, meta
+        ):
             try:
                 con.execute(
                     """insert into doi_fulltext values (?, ?, ?, ?, ?, ?, ?)""",
@@ -301,14 +313,13 @@ def _list2dict(l):
 
 
 def retrieve_best_fulltexts(
-    client: httpx.Client,
-    doi: str, url: str, error: str, status_code: int, meta: str
+    client: DOIDownloader, doi: str, url: str, error: str, status_code: int, meta: str
 ) -> Iterable[tuple]:
     # Direct PDF link
     if error == "Not HTML page" and status_code == 200:
-        res = retrieve_fulltext(url, client, expected_ftype="pdf")
+        res = client.retrieve_fulltext(url, expected_ftype="pdf")
         if res:
-            yield (*res, "application/pdf")
+            yield (*res.as_tuple(), "application/pdf")
             return
 
     # meta citation_ links
@@ -321,9 +332,9 @@ def retrieve_best_fulltexts(
             # Filter out empty string URLs
             fulltext_urls = {url for url in meta_dict[url_type] if url}
             for fulltext_url in fulltext_urls:
-                res = retrieve_fulltext(fulltext_url, client, expected_ftype=file_type)
+                res = client.retrieve_fulltext(fulltext_url, expected_ftype=file_type)
                 if res:
-                    yield (*res, content_type)
+                    yield (*res.as_tuple(), content_type)
         # XXX This may return with empty results
         return
 
@@ -332,17 +343,17 @@ def retrieve_best_fulltexts(
     templates = url_templates.get(hostname, [])
     for template in templates:
         tmpl_url = template.format(doi=quote(doi))
-        res = retrieve_fulltext(tmpl_url, client, expected_ftype="pdf")
+        res = client.retrieve_fulltext(tmpl_url, expected_ftype="pdf")
         if res and res.status_code == 200:
-            yield (*res, "application/pdf")
+            yield (*res.as_tuple(), "application/pdf")
             return
 
     # Unpaywall
-    unpaywall_url = best_unpaywall_url(doi, client)
+    unpaywall_url = client.best_unpaywall_url(doi)
     if unpaywall_url:
-        res = retrieve_fulltext(unpaywall_url, client, expected_ftype="pdf")
+        res = client.retrieve_fulltext(unpaywall_url, expected_ftype="pdf")
         if res and res.status_code == 200:
-            yield (*res, "application/pdf")
+            yield (*res.as_tuple(), "application/pdf")
 
 
 def determine_extension(content_type: str, content: bytes) -> str:
@@ -399,7 +410,7 @@ if __name__ == "__main__":
     df = df.query("score_total >= 8")
 
     # Shut up incorrect warning "Type[Client]" has no attribute "__enter__"
-    with httpx.Client as http_client:  # type: ignore
+    with DOIDownloader() as http_client:
         save_metadata(df.DOI.unique(), connection, http_client)
         # save_fulltext(connection, http_client)
         # save_to_docs(connection)
