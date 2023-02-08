@@ -8,7 +8,7 @@ import time
 import warnings
 from collections import defaultdict, namedtuple
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 from urllib.error import URLError
 from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 from urllib.robotparser import RobotFileParser
@@ -63,12 +63,16 @@ url_templates = {
     "www.emerald.com": ["https://www.emerald.com/insight/content/doi/{doi}/full/pdf"],
 }
 
-progress = Progress(
-    TextColumn("[progress.description]{task.description}"),
-    BarColumn(),
-    MofNCompleteColumn(),
-    TimeRemainingColumn(),
-)
+
+def track(sequence: Iterable, description: str) -> Iterable:
+    progress = Progress(
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TimeRemainingColumn(),
+    )
+    with progress:
+        yield from progress.track(sequence, description=description)
 
 
 def check_crawl_delay(url: str, default_delay: int = 1) -> int:
@@ -185,10 +189,11 @@ def retrieve_fulltext(
         return LookupResult(url, "SSL error", None, None)
     except (
         requests.exceptions.ConnectionError,
+        requests.exceptions.InvalidSchema,
         requests.exceptions.SSLError,
         requests.exceptions.Timeout,
     ):
-        return LookupResult(url, "Time out or connection error", None, None)
+        return LookupResult(url, "Time out, URL or connection error", None, None)
     except requests.HTTPError:
         return LookupResult(r.url, "HTTP error", r.status_code, None)  # type: ignore
 
@@ -252,19 +257,19 @@ def save_metadata(
     inserted_dois = {
         row[0] for row in cur.execute("select doi from doi_meta").fetchall()
     }
-    with progress:
-        for doi in progress.track(dois, description="Looking up DOIs..."):
-            if doi in inserted_dois:
-                continue
-            doi_url = "https://doi.org/" + quote(doi)
-            res = metadata_from_url(doi_url, session)
 
-            cur.execute(
-                """insert into doi_meta values (?, ?, ?, ?, ?, ?)""",
-                (doi, *res, datetime.now()),
-            )
-            con.commit()
-            time.sleep(check_crawl_delay(res.url))
+    for doi in track(dois, description="Looking up DOIs..."):
+        if doi in inserted_dois:
+            continue
+        doi_url = "https://doi.org/" + quote(doi)
+        res = metadata_from_url(doi_url, session)
+
+        cur.execute(
+            """insert into doi_meta values (?, ?, ?, ?, ?, ?)""",
+            (doi, *res, datetime.now()),
+        )
+        con.commit()
+        time.sleep(check_crawl_delay(res.url))
 
 
 def save_fulltext(con: sqlite3.Connection, session: requests_html.HTMLSession) -> None:
@@ -303,68 +308,65 @@ def save_fulltext(con: sqlite3.Connection, session: requests_html.HTMLSession) -
         return d
 
     # XXX Decouple this from doi_meta table
-    with progress:
-        for doi, url, error, status_code, meta, _ in progress.track(
-            cur.fetchall(), description="Saving fulltexts..."
-        ):
-            results: List[tuple] = []
+    for doi, url, error, status_code, meta, _ in track(
+        cur.fetchall(), description="Saving fulltexts..."
+    ):
+        results: List[tuple] = []
 
-            # Direct PDF link
-            if error == "Not HTML page" and status_code == 200:
-                res = retrieve_fulltext(url, session, expected_ftype="pdf")
-                if res:
-                    results.append((*tuple(res), "application/pdf"))
+        # Direct PDF link
+        if error == "Not HTML page" and status_code == 200:
+            res = retrieve_fulltext(url, session, expected_ftype="pdf")
+            if res:
+                results.append((*tuple(res), "application/pdf"))
 
-            # meta citation_ links
-            if not results:
-                if meta:
-                    meta_info = json.loads(meta)
-                    meta_dict = list2dict(meta_info)
-                    for file_type, content_type, url_type in file_types:
-                        if url_type not in meta_dict:
-                            continue
-                        # Filter out empty string URLs
-                        fulltext_urls = {url for url in meta_dict[url_type] if url}
-                        for fulltext_url in fulltext_urls:
-                            res = retrieve_fulltext(
-                                fulltext_url, session, expected_ftype=file_type
-                            )
-                            if res:
-                                results.append((*res, content_type))
+        # meta citation_ links
+        if not results:
+            if meta:
+                meta_info = json.loads(meta)
+                meta_dict = list2dict(meta_info)
+                for file_type, content_type, url_type in file_types:
+                    if url_type not in meta_dict:
+                        continue
+                    # Filter out empty string URLs
+                    fulltext_urls = {url for url in meta_dict[url_type] if url}
+                    for fulltext_url in fulltext_urls:
+                        res = retrieve_fulltext(
+                            fulltext_url, session, expected_ftype=file_type
+                        )
+                        if res:
+                            results.append((*res, content_type))
 
-            # URL templates by hostname
-            if not results:
-                hostname = urlsplit(url).netloc
-                templates = url_templates.get(hostname, [])
-                for template in templates:
-                    tmpl_url = template.format(doi=quote(doi))
-                    res = retrieve_fulltext(tmpl_url, session, expected_ftype="pdf")
-                    if res and res.status_code == 200:
-                        results.append((*res, "application/pdf"))
-                        break
+        # URL templates by hostname
+        if not results:
+            hostname = urlsplit(url).netloc
+            templates = url_templates.get(hostname, [])
+            for template in templates:
+                tmpl_url = template.format(doi=quote(doi))
+                res = retrieve_fulltext(tmpl_url, session, expected_ftype="pdf")
+                if res and res.status_code == 200:
+                    results.append((*res, "application/pdf"))
+                    break
 
-            # Unpaywall
-            if not results:
-                unpaywall_url = best_unpaywall_url(doi, session)
-                if unpaywall_url:
-                    res = retrieve_fulltext(
-                        unpaywall_url, session, expected_ftype="pdf"
-                    )
-                    if res and res.status_code == 200:
-                        results.append((*res, "application/pdf"))
+        # Unpaywall
+        if not results:
+            unpaywall_url = best_unpaywall_url(doi, session)
+            if unpaywall_url:
+                res = retrieve_fulltext(unpaywall_url, session, expected_ftype="pdf")
+                if res and res.status_code == 200:
+                    results.append((*res, "application/pdf"))
 
-            # Save results
-            for result in results:
-                try:
-                    con.execute(
-                        """insert into doi_fulltext values (?, ?, ?, ?, ?, ?, ?)""",
-                        (doi, *tuple(result), datetime.now()),
-                    )
-                except sqlite3.IntegrityError:
-                    # Ignore - this may happen if same content is registered under
-                    # multiple content-types, e.g., application/xml and text/xml
-                    pass
-            con.commit()
+        # Save results
+        for result in results:
+            try:
+                con.execute(
+                    """insert into doi_fulltext values (?, ?, ?, ?, ?, ?, ?)""",
+                    (doi, *tuple(result), datetime.now()),
+                )
+            except sqlite3.IntegrityError:
+                # Ignore - this may happen if same content is registered under
+                # multiple content-types, e.g., application/xml and text/xml
+                pass
+        con.commit()
 
 
 def determine_extension(content_type: str, content: bytes) -> str:
