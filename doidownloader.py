@@ -16,7 +16,7 @@ import lxml
 import pandas as pd
 import requests
 import requests_html
-from tqdm.auto import tqdm
+from rich.progress import track
 
 LookupResult = namedtuple("LookupResult", "url, error, status_code, content")
 # Prefill a few publishers where we encountered problems due to missing or
@@ -239,7 +239,7 @@ def save_metadata(
         row[0] for row in cur.execute("select doi from doi_meta").fetchall()
     }
 
-    for doi in tqdm(dois):
+    for doi in track(dois, description="Looking up DOIs..."):
         if doi in inserted_dois:
             continue
         doi_url = "https://doi.org/" + quote(doi)
@@ -289,7 +289,7 @@ def save_fulltext(con: sqlite3.Connection, session: requests_html.HTMLSession) -
         return d
 
     # XXX Decouple this from doi_meta table
-    for doi, url, error, status_code, meta, _ in tqdm(cur.fetchall()):
+    for doi, url, error, status_code, meta, _ in track(cur.fetchall(), description="Saving fulltexts..."):
         results: List[tuple] = []
 
         # Direct PDF link
