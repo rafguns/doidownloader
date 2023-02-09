@@ -176,7 +176,7 @@ class DOIDownloader:
         """Retrieve full-text from URL
 
         This only returns the full-text if the file type matches what was expected.
-        The reason for that is that some servers return web pages with 'Not found' on them,
+        The reason for that is that some servers return web pages saying 'Not found'
         but with status code 200.
 
         """
@@ -190,11 +190,11 @@ class DOIDownloader:
         if extension == expected_ftype:
             return LookupResult(r.url, None, r.status_code, r.content)
 
-        # Type is different from what we expected. Typically this is some HTML page being shown
-        # instead of the desired content.
+        # Type is different from what we expected. Typically this is some HTML page 
+        # being shown instead of the desired content.
 
-        # ScienceDirect uses *another* interim page here; follow only link, which redirects to
-        # the actual PDF
+        # ScienceDirect uses *another* interim page here; follow only link, which
+        # redirects to the actual PDF
         if "sciencedirect.com" in url:
             links = self.response_to_html(r).links
             if len(links) == 1:
@@ -305,9 +305,9 @@ def save_fulltext(con: sqlite3.Connection, client: DOIDownloader) -> None:
         con.commit()
 
 
-def _list2dict(l):
+def _list2dict(list_of_tuples):
     d = defaultdict(set)
-    for k, v in l:
+    for k, v in list_of_tuples:
         d[k].add(v)
     return d
 
