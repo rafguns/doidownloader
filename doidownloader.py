@@ -110,7 +110,14 @@ class DOIDownloader:
     """
 
     def __init__(self, client: Optional[httpx.Client] = None) -> None:
-        self.client = client or httpx.Client(timeout=10.0)
+        self.client = client or httpx.Client(
+            timeout=10.0,
+            headers={
+                "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                + "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 "
+                + "Safari/537.36"
+            },
+        )
 
     def __enter__(self):
         self.client.__enter__()
