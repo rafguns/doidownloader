@@ -60,6 +60,10 @@ url_templates = {
 }
 
 
+class FileWithSameContentExists(Exception):
+    """Exception: a file with the same contents already exists."""
+
+
 def track(sequence: Iterable, description: str) -> Iterable:
     progress = Progress(
         TextColumn("[progress.description]{task.description}"),
@@ -411,10 +415,6 @@ def same_contents(fname: str, bytestring: bytes) -> bool:
     hash_bytestring = hashlib.md5(bytestring).digest()
 
     return hash_file == hash_bytestring
-
-
-class FileWithSameContentExists(Exception):
-    """Exception: a file with the same contents already exists."""
 
 
 def determine_filename(
