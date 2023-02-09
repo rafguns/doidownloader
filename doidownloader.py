@@ -1,3 +1,4 @@
+"""DOI downloader: legally download full-text documents  from a list of DOIs."""
 import hashlib
 import json
 import os
@@ -21,6 +22,8 @@ from rich.progress import (
     TextColumn,
     TimeRemainingColumn,
 )
+
+__version__ = "0.0.1"
 
 # Prefill a few publishers where we encountered problems due to missing or
 # incorrect robots.txt
@@ -242,8 +245,8 @@ class DOIDownloader:
         self, doi: str, email: str = "raf.guns@uantwerpen.be"
     ) -> Optional[str]:
         url = f"https://api.unpaywall.org/v2/{quote(doi)}?email={email}"
-        r = self.client.get(url)
         try:
+            r = self.client.get(url)
             r.raise_for_status()
         except httpx.HTTPError:
             return None
