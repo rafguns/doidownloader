@@ -7,20 +7,18 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, Iterable, List, Optional, Tuple
-from urllib.error import URLError
-from urllib.parse import quote, urljoin, urlsplit, urlunsplit
+from typing import Iterable, Optional
+from urllib.parse import quote, urljoin, urlsplit
 from urllib.robotparser import RobotFileParser
 
 import httpx
 import lxml
-import pandas as pd
 import requests_html
 from tqdm.auto import tqdm
 
 # Prefill a few publishers where we encountered problems due to missing or
 # incorrect robots.txt
-crawl_delays: Dict[str, int] = {}
+crawl_delays: dict[str, int] = {}
 with open("robots.txt") as fh_robots:
     for line in fh_robots:
         domain, delay = line.strip().split()
@@ -58,7 +56,7 @@ url_templates = {
 
 @dataclass(frozen=True)
 class LookupResult:
-    """Result of an HTTP request"""
+    """Result of an HTTP request."""
 
     url: httpx.URL
     error: Optional[str] = None
@@ -70,7 +68,24 @@ class LookupResult:
 
 
 class DOIDownloader:
-    def __init__(self, client: Optional[httpx.Client] = None):
+    """Client for downloading full-texts from DOIs.
+
+    In principle, you'll mainly use this for the `save_metadata` and `save_fulltext`
+    functions. Example usage::
+
+        import sqlite3
+        import doidownloader
+
+        con = sqlite3.connect("somedois.db")
+        dois_to_find = ["10.1108/JCRPP-02-2020-0025", "10.23860/JMLE-2020-12-3-1"]
+
+        with DOIDownloader() as client:
+            save_metadata(dois_to_find, con, client)
+            save_fulltext(con, client)
+
+    """
+
+    def __init__(self, client: Optional[httpx.Client] = None) -> None:
         self.client = client or httpx.Client()
 
     def __enter__(self):
@@ -113,8 +128,8 @@ class DOIDownloader:
         return urljoin(html.base_url, redirect_url)
 
     @staticmethod
-    def metadata_from_html(html: requests_html.HTML) -> List[Tuple[str, str]]:
-        """Return all Google Scholar and Dublin Core meta info"""
+    def metadata_from_html(html: requests_html.HTML) -> list[tuple[str, str]]:
+        """Return all Google Scholar and Dublin Core meta info."""
         meta_els = html.find(
             'meta[name^="citation_"], meta[name^="dc."], meta[name^="DC."]'
         )
@@ -125,8 +140,7 @@ class DOIDownloader:
         ]
 
     def metadata_from_url(self, url: str, **kwargs) -> LookupResult:
-        """Retrieve HTML metadata for URL"""
-
+        """Retrieve HTML metadata for URL."""
         try:
             r = self.client.get(url, follow_redirects=True, **kwargs)
             r.raise_for_status()
@@ -174,10 +188,10 @@ class DOIDownloader:
     def retrieve_fulltext(
         self, url: str, expected_ftype: str, **kwargs
     ) -> Optional[LookupResult]:
-        """Retrieve full-text from URL
+        """Retrieve full-text from URL.
 
         This only returns the full-text if the file type matches what was expected.
-        The reason for that is that some servers return web pages with 'Not found' on them,
+        The reason for that is that some servers return web pages saying 'Not found'
         but with status code 200.
 
         """
@@ -191,11 +205,11 @@ class DOIDownloader:
         if extension == expected_ftype:
             return LookupResult(r.url, None, r.status_code, r.content)
 
-        # Type is different from what we expected. Typically this is some HTML page being shown
-        # instead of the desired content.
+        # Type is different from what we expected. Typically this is some HTML page 
+        # being shown instead of the desired content.
 
-        # ScienceDirect uses *another* interim page here; follow only link, which redirects to
-        # the actual PDF
+        # ScienceDirect uses *another* interim page here; follow only link, which
+        # redirects to the actual PDF
         if "sciencedirect.com" in url:
             links = self.response_to_html(r).links
             if len(links) == 1:
@@ -221,9 +235,9 @@ class DOIDownloader:
 
 
 def save_metadata(
-    dois: List[str], con: sqlite3.Connection, client: DOIDownloader
+    dois: list[str], con: sqlite3.Connection, client: DOIDownloader
 ) -> None:
-    """Retrieve and save metadata for all DOIs"""
+    """Retrieve and save metadata for all DOIs."""
     # Field error specifies what kind of error (if any) has occurred
     # (e.g. no content, connection error, HTTP error).
     # Field status_code is for HTTP status code, including HTTP errors.
@@ -263,7 +277,7 @@ def save_metadata(
 
 
 def save_fulltext(con: sqlite3.Connection, client: DOIDownloader) -> None:
-    """Retrieve and save full-text (where available) of all DOIs in table doi_meta"""
+    """Retrieve and save full-text (where available) of all DOIs in table doi_meta."""
     cur = con.cursor()
     cur.execute(
         """
@@ -306,9 +320,9 @@ def save_fulltext(con: sqlite3.Connection, client: DOIDownloader) -> None:
         con.commit()
 
 
-def _list2dict(l):
+def _list2dict(list_of_tuples):
     d = defaultdict(set)
-    for k, v in l:
+    for k, v in list_of_tuples:
         d[k].add(v)
     return d
 
@@ -373,7 +387,7 @@ def determine_extension(content_type: str, content: bytes) -> str:
 
 
 def same_contents(fname: str, bytestring: bytes) -> bool:
-    """Check if contents of file are same as bytestring"""
+    """Check if contents of file are same as bytestring."""
     hash_file = hashlib.md5(open(fname, "rb").read()).digest()
     hash_bytestring = hashlib.md5(bytestring).digest()
 
@@ -381,7 +395,7 @@ def same_contents(fname: str, bytestring: bytes) -> bool:
 
 
 class FileWithSameContentExists(Exception):
-    """Exception: a file with the same contents already exists"""
+    """Exception: a file with the same contents already exists."""
 
 
 def determine_filename(
@@ -396,22 +410,6 @@ def determine_filename(
         raise FileWithSameContentExists(f"File {fname} has same contents.")
 
     # There is already a file with the same name but different contents
-    if extra_letter == "":
-        extra_letter = "a"
-    else:
-        extra_letter = chr(ord(extra_letter) + 1)
+    extra_letter = "a" if extra_letter == "" else chr(ord(extra_letter) + 1)
 
     return determine_filename(basename, ext, content, extra_letter)
-
-
-if __name__ == "__main__":
-    connection = sqlite3.connect("download_extra_DOIs.db")
-
-    df = pd.read_excel("analysistable.xlsx")
-    df = df.query("score_total >= 8")
-
-    # Shut up incorrect warning "Type[Client]" has no attribute "__enter__"
-    with DOIDownloader() as http_client:
-        save_metadata(df.DOI.unique(), connection, http_client)
-        # save_fulltext(connection, http_client)
-        # save_to_docs(connection)
