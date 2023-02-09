@@ -107,7 +107,7 @@ class DOIDownloader:
     """
 
     def __init__(self, client: Optional[httpx.Client] = None) -> None:
-        self.client = client or httpx.Client()
+        self.client = client or httpx.Client(timeout=10.0)
 
     def __enter__(self):
         self.client.__enter__()
@@ -245,7 +245,7 @@ class DOIDownloader:
         r = self.client.get(url)
         try:
             r.raise_for_status()
-        except httpx.HTTPStatusError:
+        except httpx.HTTPError:
             return None
 
         data = r.json()
