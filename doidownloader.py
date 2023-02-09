@@ -3,11 +3,12 @@ import json
 import os
 import re
 import sqlite3
+import sys
 import time
 import warnings
 from collections import defaultdict, namedtuple
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 from urllib.error import URLError
 from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 from urllib.robotparser import RobotFileParser
@@ -16,7 +17,13 @@ import lxml
 import pandas as pd
 import requests
 import requests_html
-from tqdm.auto import tqdm
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    TextColumn,
+    TimeRemainingColumn,
+)
 
 LookupResult = namedtuple("LookupResult", "url, error, status_code, content")
 # Prefill a few publishers where we encountered problems due to missing or
@@ -55,6 +62,17 @@ url_templates = {
     "www.jstor.org": ["https://www.jstor.org/stable/pdf/{doi}.pdf"],
     "www.emerald.com": ["https://www.emerald.com/insight/content/doi/{doi}/full/pdf"],
 }
+
+
+def track(sequence: Iterable, description: str) -> Iterable:
+    progress = Progress(
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TimeRemainingColumn(),
+    )
+    with progress:
+        yield from progress.track(sequence, description=description)
 
 
 def check_crawl_delay(url: str, default_delay: int = 1) -> int:
@@ -171,10 +189,11 @@ def retrieve_fulltext(
         return LookupResult(url, "SSL error", None, None)
     except (
         requests.exceptions.ConnectionError,
+        requests.exceptions.InvalidSchema,
         requests.exceptions.SSLError,
         requests.exceptions.Timeout,
     ):
-        return LookupResult(url, "Time out or connection error", None, None)
+        return LookupResult(url, "Time out, URL or connection error", None, None)
     except requests.HTTPError:
         return LookupResult(r.url, "HTTP error", r.status_code, None)  # type: ignore
 
@@ -182,11 +201,11 @@ def retrieve_fulltext(
     if extension == expected_ftype:
         return LookupResult(r.url, None, r.status_code, r.content)
 
-    # Type is different from what we expected. Typically this is some HTML page being shown
-    # instead of the desired content.
+    # Type is different from what we expected. Typically this is some HTML page being
+    # shown instead of the desired content.
 
-    # ScienceDirect uses *another* interim page here; follow only link, which redirects to
-    # the actual PDF
+    # ScienceDirect uses *another* interim page here; follow only link, which redirects
+    # to the actual PDF
     if "sciencedirect.com" in url and len(r.html.links) == 1:
         return retrieve_fulltext(r.html.links.pop(), session, expected_ftype, **kwargs)
 
@@ -201,7 +220,7 @@ def best_unpaywall_url(
     try:
         r.raise_for_status()
     except requests.HTTPError as e:
-        warnings.warn(f"Error {e.response.status_code} for url {url}")
+        print(f"Error {e.response.status_code} for url {url}", file=sys.stderr)
         return None
 
     data = r.json()
@@ -239,7 +258,7 @@ def save_metadata(
         row[0] for row in cur.execute("select doi from doi_meta").fetchall()
     }
 
-    for doi in tqdm(dois):
+    for doi in track(dois, description="Looking up DOIs..."):
         if doi in inserted_dois:
             continue
         doi_url = "https://doi.org/" + quote(doi)
@@ -282,14 +301,16 @@ def save_fulltext(con: sqlite3.Connection, session: requests_html.HTMLSession) -
     )
 
     # Small utility function used further
-    def list2dict(l):
+    def list2dict(list_of_tuples):
         d = defaultdict(set)
-        for k, v in l:
+        for k, v in list_of_tuples:
             d[k].add(v)
         return d
 
     # XXX Decouple this from doi_meta table
-    for doi, url, error, status_code, meta, _ in tqdm(cur.fetchall()):
+    for doi, url, error, status_code, meta, _ in track(
+        cur.fetchall(), description="Saving fulltexts..."
+    ):
         results: List[tuple] = []
 
         # Direct PDF link
