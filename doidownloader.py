@@ -190,6 +190,7 @@ def retrieve_fulltext(
     except (
         requests.exceptions.ConnectionError,
         requests.exceptions.InvalidSchema,
+        requests.exceptions.MissingSchema,
         requests.exceptions.SSLError,
         requests.exceptions.Timeout,
     ):
