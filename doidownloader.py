@@ -107,7 +107,7 @@ class DOIDownloader:
     """
 
     def __init__(self, client: Optional[httpx.Client] = None) -> None:
-        self.client = client or httpx.Client()
+        self.client = client or httpx.Client(timeout=10.0)
 
     def __enter__(self):
         self.client.__enter__()
