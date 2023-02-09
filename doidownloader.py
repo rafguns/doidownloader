@@ -15,7 +15,13 @@ import httpx
 import lxml
 import pandas as pd
 import requests_html
-from tqdm.auto import tqdm
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    TextColumn,
+    TimeRemainingColumn,
+)
 
 # Prefill a few publishers where we encountered problems due to missing or
 # incorrect robots.txt
@@ -53,6 +59,17 @@ url_templates = {
     "www.jstor.org": ["https://www.jstor.org/stable/pdf/{doi}.pdf"],
     "www.emerald.com": ["https://www.emerald.com/insight/content/doi/{doi}/full/pdf"],
 }
+
+
+def track(sequence: Iterable, description: str) -> Iterable:
+    progress = Progress(
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TimeRemainingColumn(),
+    )
+    with progress:
+        yield from progress.track(sequence, description=description)
 
 
 @dataclass(frozen=True)
@@ -190,7 +207,7 @@ class DOIDownloader:
         if extension == expected_ftype:
             return LookupResult(r.url, None, r.status_code, r.content)
 
-        # Type is different from what we expected. Typically this is some HTML page 
+        # Type is different from what we expected. Typically this is some HTML page
         # being shown instead of the desired content.
 
         # ScienceDirect uses *another* interim page here; follow only link, which
@@ -247,7 +264,7 @@ def save_metadata(
         row[0] for row in cur.execute("select doi from doi_meta").fetchall()
     }
 
-    for doi in tqdm(dois):
+    for doi in track(dois, description="Looking up DOIs..."):
         if doi in inserted_dois:
             continue
         doi_url = "https://doi.org/" + quote(doi)
@@ -289,7 +306,9 @@ def save_fulltext(con: sqlite3.Connection, client: DOIDownloader) -> None:
         """
     )
 
-    for doi, url, error, status_code, meta, _ in tqdm(cur.fetchall()):
+    for doi, url, error, status_code, meta, _ in track(
+        cur.fetchall(), description="Saving fulltexts..."
+    ):
         for result in retrieve_best_fulltexts(
             client, doi, url, error, status_code, meta
         ):
