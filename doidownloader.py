@@ -60,6 +60,10 @@ url_templates = {
 }
 
 
+class FileWithSameContentExists(Exception):
+    """Exception: a file with the same contents already exists."""
+
+
 def track(sequence: Iterable, description: str) -> Iterable:
     progress = Progress(
         TextColumn("[progress.description]{task.description}"),
@@ -228,7 +232,7 @@ class DOIDownloader:
         # ScienceDirect uses *another* interim page here; follow only link, which
         # redirects to the actual PDF
         if "sciencedirect.com" in url:
-            links = self.response_to_html(r).links
+            links = self.response_to_html(r).absolute_links
             if len(links) == 1:
                 return self.retrieve_fulltext(links.pop(), expected_ftype, **kwargs)
 
@@ -363,8 +367,10 @@ def retrieve_best_fulltexts(
         for file_type, content_type, url_type in file_types:
             if url_type not in meta_dict:
                 continue
-            # Filter out empty string URLs
-            fulltext_urls = {url for url in meta_dict[url_type] if url}
+            # Resolve relative links
+            fulltext_urls = {
+                urljoin(url, fulltext_url) for fulltext_url in meta_dict[url_type]
+            }
             for fulltext_url in fulltext_urls:
                 res = client.retrieve_fulltext(fulltext_url, expected_ftype=file_type)
                 if res:
@@ -411,10 +417,6 @@ def same_contents(fname: str, bytestring: bytes) -> bool:
     hash_bytestring = hashlib.md5(bytestring).digest()
 
     return hash_file == hash_bytestring
-
-
-class FileWithSameContentExists(Exception):
-    """Exception: a file with the same contents already exists."""
 
 
 def determine_filename(
