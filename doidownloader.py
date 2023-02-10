@@ -40,6 +40,8 @@ file_types = [
     ("xml", "application/xml", "citation_xml_url"),
     ("xml", "text/xml", "citation_xml_url"),
     ("html", "text/html", "citation_full_html_url"),
+    # Note: We do NOT include "citation_fulltext_html_url". This is used by Springer to
+    # refer to landing pages rather than proper full-text documents.
     ("txt", "text/plain", None),
     ("epub", "application/epub+zip", None),
     ("json", "application/json", None),
@@ -80,7 +82,11 @@ def track(sequence: Iterable, description: str) -> Iterable:
 
 @dataclass(frozen=True)
 class LookupResult:
-    """Result of an HTTP request."""
+    """Result of an HTTP request.
+
+    This is similar to a slimmed down version of `httpx.Response`.
+    However, even if a request does not yield a response, there is still a LookupResult.
+    """
 
     url: httpx.URL
     error: Optional[str] = None
@@ -374,6 +380,8 @@ def retrieve_best_fulltexts(
     if meta:
         meta_info = json.loads(meta)
         meta_dict = _list2dict(meta_info)
+
+        found_fulltext = False
         for file_type, content_type, url_type in file_types:
             if url_type not in meta_dict:
                 continue
@@ -384,9 +392,11 @@ def retrieve_best_fulltexts(
             for fulltext_url in fulltext_urls:
                 res = client.retrieve_fulltext(fulltext_url, expected_ftype=file_type)
                 if res:
+                    if res.status_code == 200:
+                        found_fulltext = True
                     yield (*res.as_tuple(), content_type)
-        # XXX This may return with empty results
-        return
+        if found_fulltext:
+            return
 
     # URL templates by hostname
     hostname = urlsplit(url).netloc
