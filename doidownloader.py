@@ -14,7 +14,7 @@ from urllib.robotparser import RobotFileParser
 
 import httpx
 import lxml
-import requests_html
+import lxml.html
 from rich.progress import (
     BarColumn,
     MofNCompleteColumn,
@@ -133,8 +133,12 @@ class DOIDownloader:
         self.client.__exit__(ecx_type, ecx_value, traceback)
 
     @staticmethod
-    def response_to_html(response: httpx.Response) -> requests_html.HTML:
-        return requests_html.HTML(url=str(response.url), html=response.content)
+    def response_to_html(response: httpx.Response) -> lxml.html.HtmlElement:
+        html = lxml.html.fromstring(response.text, base_url=str(response.url))
+        # So we don't have to worry about relative links further on:
+        html.make_links_absolute()
+
+        return html
 
     @staticmethod
     def lookup_result_on_http_error(exception: httpx.HTTPError) -> LookupResult:
@@ -148,16 +152,19 @@ class DOIDownloader:
         return LookupResult(exception.request.url, error, status_code)
 
     @staticmethod
-    def resolve_html_redirect(html: requests_html.HTML) -> Optional[str]:
-        redirect = html.find(
-            'meta[http-equiv="REFRESH"], meta[http-equiv="REFRESH"]', first=True
-        )
-        if not redirect:
+    def resolve_html_redirect(html: lxml.html.HtmlElement) -> Optional[str]:
+        try:
+            redirect = html.cssselect(
+                'meta[http-equiv="REFRESH"], meta[http-equiv="refresh"]'
+            )[0]
+        except IndexError:
             return None
 
+        # Parse out the URL from the attribute (e.g. `content="5; url=/foo"`)
+        # We use separate regexes for variants with and without quote marks.
         m = re.search(
-            r'url\s*=\s*[\'"](.*?)[\'"]', redirect.attrs.get("content"), re.IGNORECASE
-        )
+            r'url\s*=\s*[\'"](.*?)[\'"]', redirect.attrib.get("content"), re.IGNORECASE
+        ) or re.search(r"url\s*=\s*(.+)", redirect.attrib.get("content"), re.IGNORECASE)
         if not m:
             return None
 
@@ -165,15 +172,15 @@ class DOIDownloader:
         return urljoin(html.base_url, redirect_url)
 
     @staticmethod
-    def metadata_from_html(html: requests_html.HTML) -> list[tuple[str, str]]:
+    def metadata_from_html(html: lxml.html.HtmlElement) -> list[tuple[str, str]]:
         """Return all Google Scholar and Dublin Core meta info."""
-        meta_els = html.find(
+        meta_els = html.cssselect(
             'meta[name^="citation_"], meta[name^="dc."], meta[name^="DC."]'
         )
         return [
-            (el.attrs["name"], el.attrs["content"])
+            (el.attrib["name"], el.attrib["content"])
             for el in meta_els
-            if "content" in el.attrs
+            if "content" in el.attrib
         ]
 
     def metadata_from_url(self, url: str, **kwargs) -> LookupResult:
@@ -248,7 +255,10 @@ class DOIDownloader:
         # ScienceDirect uses *another* interim page here; follow only link, which
         # redirects to the actual PDF
         if "sciencedirect.com" in url:
-            links = self.response_to_html(r).absolute_links
+            links = [
+                el.attrib["href"]
+                for el in self.response_to_html(r).cssselect("a[href]")
+            ]
             if len(links) == 1:
                 return self.retrieve_fulltext(links.pop(), expected_ftype, **kwargs)
 

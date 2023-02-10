@@ -12,7 +12,6 @@ requires-python = ">=3.10"
 dependencies = [
     "httpx>=0.23.3",
     "lxml>=4.9.1",
-    "requests_html>=0.10",
     "rich>=12.6",
 ]
 
