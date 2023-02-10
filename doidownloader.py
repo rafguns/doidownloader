@@ -213,7 +213,7 @@ class DOIDownloader:
                 r.raise_for_status()
 
                 rp = RobotFileParser()
-                rp.parse((line for line in r.text))
+                rp.parse(r.text.splitlines())
                 crawl_delays[domain] = int(rp.crawl_delay("*") or default_delay)
             except (httpx.HTTPError, AttributeError):  # HTTP error or no robots.txt
                 crawl_delays[domain] = default_delay
