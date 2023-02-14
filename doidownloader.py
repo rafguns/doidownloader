@@ -33,6 +33,8 @@ with open("robots.txt") as fh_robots:
         domain, delay = line.strip().split()
         crawl_delays[domain] = int(delay)
 
+    domain_locks: dict[str, asyncio.Lock] = {}
+
 
 file_types = [
     # extension, MIME type, GS meta field
@@ -191,14 +193,22 @@ class DOIDownloader:
         *args,
         **kwargs,
     ) -> httpx.Response:
-        crawl_delay = await self.check_crawl_delay(httpx.URL(url))
-        await asyncio.sleep(crawl_delay)
+        url = httpx.URL(url)
+        crawl_delay = await self.check_crawl_delay(url)
+        try:
+            lock = domain_locks[url.host]
+        except KeyError:
+            lock = asyncio.Lock()
+            domain_locks[url.host] = lock
 
-        r = await self.client.get(
-            url, follow_redirects=follow_redirects, *args, **kwargs
-        )
-        if raise_for_status:
-            r.raise_for_status()
+        async with lock:
+            await asyncio.sleep(crawl_delay)
+
+            r = await self.client.get(
+                url, follow_redirects=follow_redirects, *args, **kwargs
+            )
+            if raise_for_status:
+                r.raise_for_status()
 
         return r
 
@@ -329,16 +339,16 @@ async def save_metadata(
 
     tasks = set()
 
-    for doi in track(dois, description="Looking up DOIs..."):
+    for doi in dois:
         if doi in inserted_dois:
             continue
         doi_url = "https://doi.org/" + quote(doi)
         task = asyncio.create_task(client.metadata_from_url(doi_url), name=doi)
-        
+
         tasks.add(task)
         task.add_done_callback(lambda task: save(task, con))
 
-    for task in tasks:
+    for task in track(tasks, description="Looking up DOIs..."):
         await task
 
 
@@ -355,8 +365,7 @@ def save(task, con):
 
 async def save_fulltext(con: sqlite3.Connection, client: DOIDownloader) -> None:
     """Retrieve and save full-text (where available) of all DOIs in table doi_meta."""
-    cur = con.cursor()
-    cur.execute(
+    con.execute(
         """
         create table if not exists doi_fulltext
         (
@@ -373,30 +382,48 @@ async def save_fulltext(con: sqlite3.Connection, client: DOIDownloader) -> None:
     )
     con.commit()
 
-    cur.execute(
+    doi_meta = con.execute(
         """
         select *
         from doi_meta
         where doi not in (select doi from doi_fulltext)
         """
-    )
+    ).fetchall()
 
-    for doi, url, error, status_code, meta, _ in track(
-        cur.fetchall(), description="Saving fulltexts..."
-    ):
-        async for result in retrieve_best_fulltexts(
-            client, doi, url, error, status_code, meta
-        ):
-            try:
-                con.execute(
-                    """insert into doi_fulltext values (?, ?, ?, ?, ?, ?, ?)""",
-                    (doi, *result, datetime.now()),
-                )
-            except sqlite3.IntegrityError:
-                # Ignore - this may happen if same content is registered under
-                # multiple content-types, e.g., application/xml and text/xml
-                pass
-        con.commit()
+    tasks = set()
+
+    for doi, url, error, status_code, meta, _ in doi_meta:
+        task = asyncio.create_task(
+            retrieve_best_fulltexts(client, doi, url, error, status_code, meta),
+            name=doi,
+        )
+
+        tasks.add(task)
+        task.add_done_callback(lambda task: save2(task, con))
+
+    for task in track(tasks, description="Saving fulltexts..."):
+        await task
+
+
+def save2(task, con):
+    doi = task.get_name()
+    reslist = task.result()
+
+    if reslist is None:
+        # TODO log these somehow
+        return
+
+    for res in reslist:
+        try:
+            con.execute(
+                """insert into doi_fulltext values (?, ?, ?, ?, ?, ?, ?)""",
+                (doi, *res, datetime.now()),
+            )
+            con.commit()
+        except sqlite3.IntegrityError:
+            # Ignore - this may happen if same content is registered under
+            # multiple content-types, e.g., application/xml and text/xml
+            pass
 
 
 def _list2dict(list_of_tuples):
@@ -408,14 +435,14 @@ def _list2dict(list_of_tuples):
 
 async def retrieve_best_fulltexts(
     client: DOIDownloader, doi: str, url: str, error: str, status_code: int, meta: str
-) -> Iterable[tuple]:
+) -> list[tuple]:
     # Direct PDF link
     if error == "Not HTML page" and status_code == 200:
         res = await client.retrieve_fulltext(url, expected_ftype="pdf")
         if res:
-            yield (*res.as_tuple(), "application/pdf")
-            return
+            return [(*res.as_tuple(), "application/pdf")]
 
+    ft = []
     # meta citation_ links
     if meta:
         meta_info = json.loads(meta)
@@ -436,9 +463,9 @@ async def retrieve_best_fulltexts(
                 if res:
                     if res.status_code == 200:
                         found_fulltext = True
-                    yield (*res.as_tuple(), content_type)
+                    ft.append((*res.as_tuple(), content_type))
         if found_fulltext:
-            return
+            return ft
 
     # URL templates by hostname
     hostname = urlsplit(url).netloc
@@ -447,15 +474,14 @@ async def retrieve_best_fulltexts(
         tmpl_url = template.format(doi=quote(doi))
         res = await client.retrieve_fulltext(tmpl_url, expected_ftype="pdf")
         if res and res.status_code == 200:
-            yield (*res.as_tuple(), "application/pdf")
-            return
+            return [(*res.as_tuple(), "application/pdf")]
 
     # Unpaywall
     unpaywall_url = await client.best_unpaywall_url(doi)
     if unpaywall_url:
         res = await client.retrieve_fulltext(unpaywall_url, expected_ftype="pdf")
         if res and res.status_code == 200:
-            yield (*res.as_tuple(), "application/pdf")
+            return [(*res.as_tuple(), "application/pdf")]
 
 
 def determine_extension(content_type: str, content: bytes) -> str:
@@ -503,5 +529,6 @@ if __name__ == "__main__":
         dois = [line.strip() for line in fh]
     con = sqlite3.connect("asynciotest.db")
     client = DOIDownloader()
-    
+
     asyncio.run(save_metadata(dois, con, client))
+    #asyncio.run(save_fulltext(con, client))
