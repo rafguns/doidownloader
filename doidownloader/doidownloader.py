@@ -330,7 +330,9 @@ async def retrieve_metadata(
         tasks.add(task)
         task.add_done_callback(lambda task: save_metadata(task, con))
 
-    for task in track(tasks, description="Looking up DOIs..."):
+    for task in track(
+        asyncio.as_completed(tasks), description="Looking up DOIs...", total=len(tasks)
+    ):
         await task
 
 
