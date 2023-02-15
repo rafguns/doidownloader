@@ -27,6 +27,12 @@ from .files import determine_extension, file_types
 __version__ = "0.0.1"
 
 logger = logging.getLogger("doidownloader")
+logger.setLevel(logging.DEBUG)
+handler = logging.FileHandler("log.txt")
+handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+logger.addHandler(handler)
+
+logger.debug("Application start")
 
 # Prefill a few publishers where we encountered problems due to missing or
 # incorrect robots.txt
@@ -340,6 +346,8 @@ def save_metadata(task, con):
     doi = task.get_name()
     res = task.result()
 
+    logger.debug("Saving metadata for doi %s", doi)
+
     con.execute(
         """insert into doi_meta values (?, ?, ?, ?, ?, ?)""",
         (doi, *res.as_tuple(), datetime.now()),
@@ -396,6 +404,8 @@ async def retrieve_fulltexts(con: sqlite3.Connection, client: DOIDownloader) -> 
 def save_fulltexts(task, con):
     doi = task.get_name()
     reslist = task.result()
+
+    logger.debug("Saving fulltext for DOI %s", doi)
 
     if reslist is None:
         # TODO log these somehow
