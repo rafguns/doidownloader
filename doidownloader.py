@@ -4,12 +4,13 @@ import hashlib
 import json
 import os
 import re
+import logging
 import sqlite3
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Iterable, Optional
-from urllib.parse import quote, urljoin, urlsplit
+from urllib.parse import quote
 from urllib.robotparser import RobotFileParser
 
 import httpx
@@ -24,6 +25,8 @@ from rich.progress import (
 )
 
 __version__ = "0.0.1"
+
+logger = logging.getLogger("doidownloader")
 
 # Prefill a few publishers where we encountered problems due to missing or
 # incorrect robots.txt
@@ -71,7 +74,7 @@ class FileWithSameContentExists(Exception):
     """Exception: a file with the same contents already exists."""
 
 
-def track(sequence: Iterable, description: str) -> Iterable:
+def track(sequence: Iterable, *args, **kwargs) -> Iterable:
     progress = Progress(
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
@@ -79,7 +82,7 @@ def track(sequence: Iterable, description: str) -> Iterable:
         TimeRemainingColumn(),
     )
     with progress:
-        yield from progress.track(sequence, description=description)
+        yield from progress.track(sequence, *args, **kwargs)
 
 
 @dataclass(frozen=True)
@@ -154,7 +157,7 @@ class DOIDownloader:
         return LookupResult(exception.request.url, error, status_code)
 
     @staticmethod
-    def resolve_html_redirect(html: lxml.html.HtmlElement) -> Optional[str]:
+    def resolve_html_redirect(html: lxml.html.HtmlElement) -> Optional[httpx.URL]:
         try:
             redirect = html.cssselect(
                 'meta[http-equiv="REFRESH"], meta[http-equiv="refresh"]'
@@ -171,7 +174,7 @@ class DOIDownloader:
             return None
 
         redirect_url = m[1]
-        return urljoin(html.base_url, redirect_url)
+        return httpx.URL(html.base_url).join(redirect_url)
 
     @staticmethod
     def metadata_from_html(html: lxml.html.HtmlElement) -> list[tuple[str, str]]:
@@ -187,13 +190,12 @@ class DOIDownloader:
 
     async def get(
         self,
-        url: httpx.URL | str,
+        url: httpx.URL,
         raise_for_status: bool = True,
         follow_redirects: bool = True,
         *args,
         **kwargs,
     ) -> httpx.Response:
-        url = httpx.URL(url)
         crawl_delay = await self.check_crawl_delay(url)
         try:
             lock = domain_locks[url.host]
@@ -204,6 +206,7 @@ class DOIDownloader:
         async with lock:
             await asyncio.sleep(crawl_delay)
 
+            logger.debug("Retrieving url %s", url)
             r = await self.client.get(
                 url, follow_redirects=follow_redirects, *args, **kwargs
             )
@@ -212,7 +215,7 @@ class DOIDownloader:
 
         return r
 
-    async def metadata_from_url(self, url: str, **kwargs) -> LookupResult:
+    async def metadata_from_url(self, url: httpx.URL, **kwargs) -> LookupResult:
         """Retrieve HTML metadata for URL."""
         try:
             r = await self.get(url, **kwargs)
@@ -238,11 +241,9 @@ class DOIDownloader:
         )
 
     async def check_crawl_delay(self, url: httpx.URL, default_delay: int = 1) -> int:
-        domain = url.netloc.decode("utf-8")
-
-        if domain not in crawl_delays:
-            print(f"Checking robots policy for {domain}")
-            robots_url = f"{url.scheme}://{url.netloc}/robots.txt"
+        if url.host not in crawl_delays:
+            logger.debug(f"Checking robots policy for {url.host}")
+            robots_url = url.copy_with(path="/robots.txt")
 
             try:
                 r = await self.client.get(robots_url)
@@ -259,7 +260,7 @@ class DOIDownloader:
         return crawl_delays[domain]
 
     async def retrieve_fulltext(
-        self, url: str, expected_ftype: str, **kwargs
+        self, url: httpx.URL, expected_ftype: str, **kwargs
     ) -> Optional[LookupResult]:
         """Retrieve full-text from URL.
 
@@ -282,7 +283,7 @@ class DOIDownloader:
 
         # ScienceDirect uses *another* interim page here; follow only link, which
         # redirects to the actual PDF
-        if "sciencedirect.com" in url:
+        if "sciencedirect.com" in url.host:
             links = [
                 el.attrib["href"]
                 for el in self.response_to_html(r).cssselect("a[href]")
@@ -296,8 +297,8 @@ class DOIDownloader:
 
     async def best_unpaywall_url(
         self, doi: str, email: str = "raf.guns@uantwerpen.be"
-    ) -> Optional[str]:
-        url = f"https://api.unpaywall.org/v2/{quote(doi)}?email={email}"
+    ) -> Optional[httpx.URL]:
+        url = httpx.URL(f"https://api.unpaywall.org/v2/{quote(doi)}?email={email}")
         try:
             r = await self.get(url)
         except httpx.HTTPError:
@@ -307,10 +308,10 @@ class DOIDownloader:
         if not data["is_oa"]:
             return None
 
-        return data["best_oa_location"]["url"]
+        return httpx.URL(data["best_oa_location"]["url"])
 
 
-async def save_metadata(
+async def retrieve_metadata(
     dois: list[str], con: sqlite3.Connection, client: DOIDownloader
 ) -> None:
     """Retrieve and save metadata for all DOIs."""
@@ -342,17 +343,16 @@ async def save_metadata(
     for doi in dois:
         if doi in inserted_dois:
             continue
-        doi_url = "https://doi.org/" + quote(doi)
+        doi_url = httpx.URL("https://doi.org").join(f"/{quote(doi)}")
         task = asyncio.create_task(client.metadata_from_url(doi_url), name=doi)
-
         tasks.add(task)
-        task.add_done_callback(lambda task: save(task, con))
+        task.add_done_callback(lambda task: save_metadata(task, con))
 
     for task in track(tasks, description="Looking up DOIs..."):
         await task
 
 
-def save(task, con):
+def save_metadata(task, con):
     doi = task.get_name()
     res = task.result()
 
@@ -363,7 +363,7 @@ def save(task, con):
     con.commit()
 
 
-async def save_fulltext(con: sqlite3.Connection, client: DOIDownloader) -> None:
+async def retrieve_fulltexts(con: sqlite3.Connection, client: DOIDownloader) -> None:
     """Retrieve and save full-text (where available) of all DOIs in table doi_meta."""
     con.execute(
         """
@@ -394,18 +394,22 @@ async def save_fulltext(con: sqlite3.Connection, client: DOIDownloader) -> None:
 
     for doi, url, error, status_code, meta, _ in doi_meta:
         task = asyncio.create_task(
-            retrieve_best_fulltexts(client, doi, url, error, status_code, meta),
+            retrieve_best_fulltexts(
+                client, doi, LookupResult(httpx.URL(url), error, status_code, meta)
+            ),
             name=doi,
         )
 
         tasks.add(task)
-        task.add_done_callback(lambda task: save2(task, con))
+        task.add_done_callback(lambda task: save_fulltexts(task, con))
 
-    for task in track(tasks, description="Saving fulltexts..."):
+    for task in track(
+        asyncio.as_completed(tasks), description="Saving fulltexts...", total=len(tasks)
+    ):
         await task
 
 
-def save2(task, con):
+def save_fulltexts(task, con):
     doi = task.get_name()
     reslist = task.result()
 
@@ -434,31 +438,27 @@ def _list2dict(list_of_tuples):
 
 
 async def retrieve_best_fulltexts(
-    client: DOIDownloader, doi: str, url: str, error: str, status_code: int, meta: str
+    client: DOIDownloader, doi: str, lookup_result: LookupResult
 ) -> list[tuple]:
     # Direct PDF link
-    if error == "Not HTML page" and status_code == 200:
-        res = await client.retrieve_fulltext(url, expected_ftype="pdf")
+    if lookup_result.error == "Not HTML page" and lookup_result.status_code == 200:
+        res = await client.retrieve_fulltext(lookup_result.url, expected_ftype="pdf")
         if res:
             return [(*res.as_tuple(), "application/pdf")]
 
     ft = []
     # meta citation_ links
-    if meta:
-        meta_info = json.loads(meta)
+    if lookup_result.content:
+        meta_info = json.loads(lookup_result.content)
         meta_dict = _list2dict(meta_info)
 
         found_fulltext = False
         for file_type, content_type, url_type in file_types:
             if url_type not in meta_dict:
                 continue
-            # Resolve relative links
-            fulltext_urls = {
-                urljoin(url, fulltext_url) for fulltext_url in meta_dict[url_type]
-            }
-            for fulltext_url in fulltext_urls:
+            for fulltext_url in meta_dict[url_type]:
                 res = await client.retrieve_fulltext(
-                    fulltext_url, expected_ftype=file_type
+                    httpx.URL(fulltext_url), expected_ftype=file_type
                 )
                 if res:
                     if res.status_code == 200:
@@ -468,10 +468,10 @@ async def retrieve_best_fulltexts(
             return ft
 
     # URL templates by hostname
-    hostname = urlsplit(url).netloc
+    hostname = lookup_result.url.host
     templates = url_templates.get(hostname, [])
     for template in templates:
-        tmpl_url = template.format(doi=quote(doi))
+        tmpl_url = httpx.URL(template.format(doi=quote(doi)))
         res = await client.retrieve_fulltext(tmpl_url, expected_ftype="pdf")
         if res and res.status_code == 200:
             return [(*res.as_tuple(), "application/pdf")]

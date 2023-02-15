@@ -525,3 +525,11 @@ bmjopen.bmj.com	10
 efsa.onlinelibrary.wiley.com	1
 journal.alt.ac.uk	1
 www.sciencedirect.com	1
+api.unpaywall.org	1
+page-one.springer.com	1
+pure.rug.nl	1
+europepmc.org	1
+biblio.ugent.be	1
+opus.lib.uts.edu.au	1
+lirias.kuleuven.be	1
+nrl.northumbria.ac.uk	1
