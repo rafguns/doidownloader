@@ -42,7 +42,8 @@ with open("robots.txt") as fh_robots:
         domain, delay = line.strip().split()
         crawl_delays[domain] = int(delay)
 
-    domain_locks: dict[str, asyncio.Lock] = {}
+# We maintain a lock per domain to ensure that the crawl delays are respected.
+domain_locks: dict[str, asyncio.Lock] = {}
 
 
 url_templates = {
@@ -102,9 +103,9 @@ class DOIDownloader:
         con = sqlite3.connect("somedois.db")
         dois_to_find = ["10.1108/JCRPP-02-2020-0025", "10.23860/JMLE-2020-12-3-1"]
 
-        with DOIDownloader() as client:
-            save_metadata(dois_to_find, con, client)
-            save_fulltext(con, client)
+        client = DOIDownloader()
+        save_metadata(dois_to_find, con, client)
+        save_fulltext(con, client)
 
     """
 
@@ -117,13 +118,6 @@ class DOIDownloader:
                 + "Safari/537.36"
             },
         )
-
-    def __enter__(self):
-        self.client.__enter__()
-        return self
-
-    def __exit__(self, ecx_type, ecx_value, traceback):
-        self.client.__exit__(ecx_type, ecx_value, traceback)
 
     @staticmethod
     def response_to_html(response: httpx.Response) -> lxml.html.HtmlElement:
