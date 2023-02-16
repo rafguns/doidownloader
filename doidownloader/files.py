@@ -16,7 +16,7 @@ file_types = [
 ]
 
 
-class FileWithSameContentExists(Exception):
+class FileWithSameContentError(Exception):
     """Exception: a file with the same contents already exists."""
 
 
@@ -29,15 +29,16 @@ def determine_extension(content_type: str, content: bytes) -> str:
         # Unknown or missing content type; guess by content sniffing
         if content[:4] == b"%PDF":
             return "pdf"
-        elif content.startswith(b"<article"):
+        if content.startswith(b"<article"):
             return "xml"
-        else:
-            return "unknown"
+
+        return "unknown"
 
 
 def same_contents(fname: str, bytestring: bytes) -> bool:
     """Check if contents of file are same as bytestring."""
-    hash_file = hashlib.md5(open(fname, "rb").read()).digest()
+    with open(fname, "rb") as fh:
+        hash_file = hashlib.md5(fh.read()).digest()
     hash_bytestring = hashlib.md5(bytestring).digest()
 
     return hash_file == hash_bytestring
@@ -52,7 +53,8 @@ def determine_filename(
         return fname
 
     if same_contents(fname, content):
-        raise FileWithSameContentExists(f"File {fname} has same contents.")
+        err = f"File {fname} has same contents."
+        raise FileWithSameContentError(err)
 
     # There is already a file with the same name but different contents
     extra_letter = "a" if extra_letter == "" else chr(ord(extra_letter) + 1)

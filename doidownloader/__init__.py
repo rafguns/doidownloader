@@ -4,4 +4,4 @@ from .doidownloader import (
     retrieve_fulltexts,
     retrieve_metadata,
 )
-from .files import FileWithSameContentExists, determine_extension, determine_filename
+from .files import FileWithSameContentError, determine_extension, determine_filename

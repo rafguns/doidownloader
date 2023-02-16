@@ -114,9 +114,10 @@ class DOIDownloader:
         self.client = client or httpx.AsyncClient(
             timeout=10.0,
             headers={
-                "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                + "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 "
-                + "Safari/537.36"
+                "user-agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36"
+                )
             },
         )
 
@@ -174,9 +175,9 @@ class DOIDownloader:
     async def get(
         self,
         url: httpx.URL,
+        *,
         raise_for_status: bool = True,
         follow_redirects: bool = True,
-        *args,
         **kwargs,
     ) -> httpx.Response:
         crawl_delay = await self.check_crawl_delay(url)
@@ -190,9 +191,7 @@ class DOIDownloader:
             await asyncio.sleep(crawl_delay)
 
             logger.debug("Retrieving url %s", url)
-            r = await self.client.get(
-                url, follow_redirects=follow_redirects, *args, **kwargs
-            )
+            r = await self.client.get(url, follow_redirects=follow_redirects, **kwargs)
             if raise_for_status:
                 r.raise_for_status()
 
@@ -225,7 +224,7 @@ class DOIDownloader:
 
     async def check_crawl_delay(self, url: httpx.URL, default_delay: int = 1) -> int:
         if url.host not in crawl_delays:
-            logger.debug(f"Checking robots policy for {url.host}")
+            logger.debug("Checking robots policy for %s", url.host)
             robots_url = url.copy_with(path="/robots.txt")
 
             try:
@@ -317,7 +316,7 @@ async def retrieve_metadata(
         await task
 
 
-def save_metadata(task, con):
+def save_metadata(task: asyncio.Task, con: sqlite3.Connection) -> None:
     doi = task.get_name()
     res = task.result()
 
@@ -351,7 +350,7 @@ async def retrieve_fulltexts(con: sqlite3.Connection, client: DOIDownloader) -> 
         await task
 
 
-def save_fulltexts(task, con):
+def save_fulltexts(task: asyncio.Task, con: sqlite3.Connection) -> None:
     doi = task.get_name()
     reslist = task.result()
 
@@ -374,7 +373,7 @@ def save_fulltexts(task, con):
             pass
 
 
-def _list2dict(list_of_tuples):
+def _list2dict(list_of_tuples: list[tuple]) -> dict[str, set[str]]:
     d = defaultdict(set)
     for k, v in list_of_tuples:
         d[k].add(v)
@@ -385,7 +384,10 @@ async def retrieve_best_fulltexts(
     client: DOIDownloader, doi: str, lookup_result: LookupResult
 ) -> list[tuple]:
     # Direct PDF link
-    if lookup_result.error == "Not HTML page" and lookup_result.status_code == 200:
+    if (
+        lookup_result.error == "Not HTML page"
+        and lookup_result.status_code == httpx.codes.OK
+    ):
         res = await client.retrieve_fulltext(lookup_result.url, expected_ftype="pdf")
         if res:
             return [(*res.as_tuple(), "application/pdf")]
@@ -405,7 +407,7 @@ async def retrieve_best_fulltexts(
                     httpx.URL(fulltext_url), expected_ftype=file_type
                 )
                 if res:
-                    if res.status_code == 200:
+                    if res.status_code == httpx.codes.OK:
                         found_fulltext = True
                     ft.append((*res.as_tuple(), content_type))
         if found_fulltext:
@@ -417,12 +419,14 @@ async def retrieve_best_fulltexts(
     for template in templates:
         tmpl_url = httpx.URL(template.format(doi=quote(doi)))
         res = await client.retrieve_fulltext(tmpl_url, expected_ftype="pdf")
-        if res and res.status_code == 200:
+        if res and res.status_code == httpx.codes.OK:
             return [(*res.as_tuple(), "application/pdf")]
 
     # Unpaywall
     unpaywall_url = await client.best_unpaywall_url(doi)
     if unpaywall_url:
         res = await client.retrieve_fulltext(unpaywall_url, expected_ftype="pdf")
-        if res and res.status_code == 200:
+        if res and res.status_code == httpx.codes.OK:
             return [(*res.as_tuple(), "application/pdf")]
+
+    return []
