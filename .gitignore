@@ -49,3 +49,8 @@ nosetests.xml
 .ipynb*
 .mypy_cache
 .vscode
+
+# Project-specific files
+asynciotest.db
+dois.txt
+log.txt
