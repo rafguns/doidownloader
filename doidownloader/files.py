@@ -1,5 +1,5 @@
-import os
 import hashlib
+import os
 
 file_types = [
     # extension, MIME type, GS meta field

@@ -1,7 +1,8 @@
-import sqlite3
 import asyncio
-from .doidownloader import DOIDownloader, retrieve_metadata, retrieve_fulltexts
+import sqlite3
+
 from .db import prepare_tables
+from .doidownloader import DOIDownloader, retrieve_fulltexts, retrieve_metadata
 
 if __name__ == "__main__":
     with open("dois.txt") as fh:

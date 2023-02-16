@@ -1,13 +1,13 @@
 """DOI downloader: legally download full-text documents  from a list of DOIs."""
 import asyncio
 import json
-import re
 import logging
+import re
 import sqlite3
 from collections import defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Iterable, Optional
 from urllib.parse import quote
 from urllib.robotparser import RobotFileParser
 
@@ -21,6 +21,7 @@ from rich.progress import (
     TextColumn,
     TimeRemainingColumn,
 )
+
 from . import db
 from .files import determine_extension, file_types
 
@@ -83,9 +84,9 @@ class LookupResult:
     """
 
     url: httpx.URL
-    error: Optional[str] = None
-    status_code: Optional[int] = None
-    content: Optional[bytes] = None
+    error: str | None = None
+    status_code: int | None = None
+    content: bytes | None = None
 
     def as_tuple(self) -> tuple:
         return (str(self.url), self.error, self.status_code, self.content)
@@ -109,7 +110,7 @@ class DOIDownloader:
 
     """
 
-    def __init__(self, client: Optional[httpx.Client] = None) -> None:
+    def __init__(self, client: httpx.Client | None = None) -> None:
         self.client = client or httpx.AsyncClient(
             timeout=10.0,
             headers={
@@ -139,7 +140,7 @@ class DOIDownloader:
         return LookupResult(exception.request.url, error, status_code)
 
     @staticmethod
-    def resolve_html_redirect(html: lxml.html.HtmlElement) -> Optional[httpx.URL]:
+    def resolve_html_redirect(html: lxml.html.HtmlElement) -> httpx.URL | None:
         try:
             redirect = html.cssselect(
                 'meta[http-equiv="REFRESH"], meta[http-equiv="refresh"]'
@@ -243,7 +244,7 @@ class DOIDownloader:
 
     async def retrieve_fulltext(
         self, url: httpx.URL, expected_ftype: str, **kwargs
-    ) -> Optional[LookupResult]:
+    ) -> LookupResult | None:
         """Retrieve full-text from URL.
 
         This only returns the full-text if the file type matches what was expected.
@@ -279,7 +280,7 @@ class DOIDownloader:
 
     async def best_unpaywall_url(
         self, doi: str, email: str = "raf.guns@uantwerpen.be"
-    ) -> Optional[httpx.URL]:
+    ) -> httpx.URL | None:
         url = httpx.URL(f"https://api.unpaywall.org/v2/{quote(doi)}?email={email}")
         try:
             r = await self.get(url)
@@ -297,7 +298,6 @@ async def retrieve_metadata(
     dois: list[str], con: sqlite3.Connection, client: DOIDownloader
 ) -> None:
     """Retrieve and save metadata for all DOIs."""
-
     # With this, we can run the script in multiple batches.
     inserted_dois = db.dois_in_meta(con)
 
@@ -332,7 +332,6 @@ def save_metadata(task, con):
 
 async def retrieve_fulltexts(con: sqlite3.Connection, client: DOIDownloader) -> None:
     """Retrieve and save full-text (where available) of all DOIs in table doi_meta."""
-
     tasks = set()
 
     for doi, url, error, status_code, meta in db.data_for_fulltext(con):

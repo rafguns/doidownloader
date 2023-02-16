@@ -1,5 +1,5 @@
 import sqlite3
-from typing import Iterator, Optional
+from collections.abc import Iterator
 
 
 def prepare_tables(con: sqlite3.Connection) -> None:
@@ -42,7 +42,7 @@ def dois_in_meta(con: sqlite3.Connection) -> set:
     return {row[0] for row in con.execute("select doi from doi_meta").fetchall()}
 
 
-Row = tuple[str, str, Optional[str], Optional[int], Optional[str]]
+Row = tuple[str, str, str | None, int | None, str | None]
 
 
 def data_for_fulltext(con: sqlite3.Connection) -> Iterator[Row]:
