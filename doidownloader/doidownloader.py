@@ -35,18 +35,6 @@ logger.addHandler(handler)
 
 logger.debug("Application start")
 
-# Prefill a few publishers where we encountered problems due to missing or
-# incorrect robots.txt
-crawl_delays: dict[str, int] = {}
-with open("robots.txt") as fh_robots:
-    for line in fh_robots:
-        domain, delay = line.strip().split()
-        crawl_delays[domain] = int(delay)
-
-# We maintain a lock per domain to ensure that the crawl delays are respected.
-domain_locks: dict[str, asyncio.Lock] = {}
-
-
 url_templates = {
     "link.springer.com": [
         "https://link.springer.com/content/pdf/{doi}.pdf",
@@ -120,6 +108,16 @@ class DOIDownloader:
                 )
             },
         )
+        
+        self.crawl_delays: dict[str, int] = {}
+        with open("robots.txt") as fh_robots:
+            for line in fh_robots:
+                domain, delay = line.strip().split()
+                self.crawl_delays[domain] = int(delay)
+
+        # We maintain a lock per domain to ensure that the crawl delays are respected.
+        self.domain_locks: dict[str, asyncio.Lock] = {}
+
 
     @staticmethod
     def response_to_html(response: httpx.Response) -> lxml.html.HtmlElement:
@@ -181,10 +179,10 @@ class DOIDownloader:
         **kwargs,
     ) -> httpx.Response:
         try:
-            lock = domain_locks[url.host]
+            lock = self.domain_locks[url.host]
         except KeyError:
             lock = asyncio.Lock()
-            domain_locks[url.host] = lock
+            self.domain_locks[url.host] = lock
 
         async with lock:
             crawl_delay = await self.check_crawl_delay(url)
@@ -225,7 +223,7 @@ class DOIDownloader:
     async def check_crawl_delay(self, url: httpx.URL, default_delay: int = 1) -> int:
         domain = url.host
 
-        if domain not in crawl_delays:
+        if domain not in self.crawl_delays:
             robots_url = url.copy_with(path="/robots.txt", query="", fragment="")
             logger.debug("Checking robots policy for %s (%s)", domain, robots_url)
 
@@ -235,13 +233,13 @@ class DOIDownloader:
 
                 rp = RobotFileParser()
                 rp.parse(r.text.splitlines())
-                crawl_delays[domain] = int(rp.crawl_delay("*") or default_delay)
+                self.crawl_delays[domain] = int(rp.crawl_delay("*") or default_delay)
             except httpx.HTTPError:  # HTTP error or no robots.txt
-                crawl_delays[domain] = default_delay
+                self.crawl_delays[domain] = default_delay
             with open("robots.txt", "a") as fh:
-                fh.write(f"{domain}\t{crawl_delays[domain]}\n")
+                fh.write(f"{domain}\t{self.crawl_delays[domain]}\n")
 
-        return crawl_delays[domain]
+        return self.crawl_delays[domain]
 
     async def retrieve_fulltext(
         self, url: httpx.URL, expected_ftype: str, **kwargs
@@ -356,7 +354,7 @@ async def _retrieve_best_fulltexts(doi: str, client: DOIDownloader) -> Iterator[
     direct_url = res.url
     res = await client.metadata_from_url(direct_url)
     if res.error is None:
-        
+
         meta_info = json.loads(res.content)
         meta_dict = _list2dict(meta_info)
 
