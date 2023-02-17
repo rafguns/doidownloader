@@ -2,7 +2,7 @@ import asyncio
 import sqlite3
 
 from .db import prepare_tables
-from .doidownloader import DOIDownloader, retrieve_fulltexts, retrieve_metadata
+from .doidownloader import DOIDownloader, retrieve_fulltexts
 
 if __name__ == "__main__":
     with open("dois.txt") as fh:
@@ -12,5 +12,4 @@ if __name__ == "__main__":
 
     client = DOIDownloader()
 
-    asyncio.run(retrieve_metadata(dois, con, client))
-    asyncio.run(retrieve_fulltexts(con, client))
+    asyncio.run(retrieve_fulltexts(dois, con, client))
