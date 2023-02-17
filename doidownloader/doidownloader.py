@@ -8,6 +8,7 @@ from collections import defaultdict
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import quote
 from urllib.robotparser import RobotFileParser
 
@@ -98,7 +99,12 @@ class DOIDownloader:
 
     """
 
-    def __init__(self, client: httpx.Client | None = None) -> None:
+    def __init__(
+        self,
+        client: httpx.Client | None = None,
+        crawl_delays: dict[str, int] | None = None,
+        robots_cache_file: str = "robots.txt",
+    ) -> None:
         self.client = client or httpx.AsyncClient(
             timeout=10.0,
             headers={
@@ -108,16 +114,18 @@ class DOIDownloader:
                 )
             },
         )
-        
-        self.crawl_delays: dict[str, int] = {}
-        with open("robots.txt") as fh_robots:
-            for line in fh_robots:
-                domain, delay = line.strip().split()
-                self.crawl_delays[domain] = int(delay)
+
+        self.crawl_delays: dict[str, int] = crawl_delays or {}
+        try:
+            with open(robots_cache_file) as fh_robots:
+                for line in fh_robots:
+                    domain, delay = line.strip().split()
+                    self.crawl_delays[domain] = int(delay)
+        except FileNotFoundError:
+            Path(robots_cache_file).touch()
 
         # We maintain a lock per domain to ensure that the crawl delays are respected.
         self.domain_locks: dict[str, asyncio.Lock] = {}
-
 
     @staticmethod
     def response_to_html(response: httpx.Response) -> lxml.html.HtmlElement:
@@ -224,7 +232,7 @@ class DOIDownloader:
         domain = url.host
 
         if domain not in self.crawl_delays:
-            robots_url = url.copy_with(path="/robots.txt", query="", fragment="")
+            robots_url = url.copy_with(path="/robots.txt", query=None, fragment=None)
             logger.debug("Checking robots policy for %s (%s)", domain, robots_url)
 
             try:
@@ -389,5 +397,5 @@ async def _retrieve_best_fulltexts(doi: str, client: DOIDownloader) -> Iterator[
         if res.error is None:
             yield (*res.as_tuple(), "application/pdf")
             return
-    
+
     logger.debug("No strategies succeeded for DOI %s", doi)
