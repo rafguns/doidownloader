@@ -1,19 +1,17 @@
 import hashlib
 import os
 
-file_types = [
-    # extension, MIME type, GS meta field
-    ("pdf", "application/pdf", "citation_pdf_url"),
-    ("xml", "application/xml", "citation_xml_url"),
-    ("xml", "text/xml", "citation_xml_url"),
-    ("html", "text/html", "citation_full_html_url"),
-    # Note: We do NOT include "citation_fulltext_html_url". This is used by Springer to
-    # refer to landing pages rather than proper full-text documents.
-    ("txt", "text/plain", None),
-    ("epub", "application/epub+zip", None),
-    ("json", "application/json", None),
-    ("png", "image/png", None),
-]
+# Mapping of MIME type to basic file type/extension
+mime_types = {
+    "application/pdf": "pdf",
+    "application/xml": "xml",
+    "text/xml": "xml",
+    "text/html": "html",
+    "text/plain": "txt",
+    "application/epub+zip": "epub",
+    "application/json": "json",
+    "image/png": "png",
+}
 
 
 class FileWithSameContentError(Exception):
@@ -21,10 +19,9 @@ class FileWithSameContentError(Exception):
 
 
 def determine_extension(content_type: str, content: bytes) -> str:
-    extensions = {mime_type: ext for ext, mime_type, _ in file_types}
     try:
         content_type = content_type.split(";")[0]
-        return extensions[content_type]
+        return mime_types[content_type]
     except (AttributeError, KeyError):
         # Unknown or missing content type; guess by content sniffing
         if content[:4] == b"%PDF":

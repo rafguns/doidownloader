@@ -24,7 +24,7 @@ from rich.progress import (
 )
 
 from . import db
-from .files import determine_extension, file_types
+from .files import determine_extension
 
 __version__ = "0.0.1"
 
@@ -339,15 +339,23 @@ def _list2dict(list_of_tuples: list[tuple]) -> dict[str, set[str]]:
     return d
 
 
-def _fulltext_urls_from_meta(data: bytes) -> Iterator[tuple[httpx.URL, str, str]]:
+def _fulltext_urls_from_meta(data: bytes) -> Iterator[tuple[httpx.URL, str]]:
     meta_info = json.loads(data)
     meta_dict = _list2dict(meta_info)
 
-    for file_type, content_type, url_type in file_types:
-        if url_type not in meta_dict:
+    # These are the main fields used in HTML <meta> elements, with their file type.
+    # Note: We do NOT include "citation_fulltext_html_url". This is used by Springer to
+    # refer to landing pages rather than proper full-text documents.
+    meta_url_fields = {
+        "citation_pdf_url": "pdf",
+        "citation_xml_url": "xml",
+        "citation_full_html_url": "html",
+    }
+    for field, file_type in meta_url_fields.items():
+        if field not in meta_dict:
             continue
-        for fulltext_url in meta_dict[url_type]:
-            yield httpx.URL(fulltext_url), file_type, content_type
+        for fulltext_url in meta_dict[field]:
+            yield httpx.URL(fulltext_url), file_type
 
 
 async def retrieve_best_fulltexts(doi: str, client: DOIDownloader) -> list[tuple]:
@@ -356,7 +364,7 @@ async def retrieve_best_fulltexts(doi: str, client: DOIDownloader) -> list[tuple
     doi_url = httpx.URL("https://doi.org").join(f"/{quote(doi)}")
     res = await client.retrieve_fulltext(doi_url, expected_ftype="pdf")
     if res.error is None:
-        return [(*res.as_tuple(), "application/pdf")]
+        return [(*res.as_tuple(), "pdf")]
 
     # Can we use information from HTML <meta> elements?
     logger.debug("Checking for metadata for DOI %s", doi)
@@ -364,12 +372,12 @@ async def retrieve_best_fulltexts(doi: str, client: DOIDownloader) -> list[tuple
     res = await client.metadata_from_url(direct_url)
     if res.error is None:
         fulltexts = []
-        for fulltext_url, file_type, content_type in _fulltext_urls_from_meta(
+        for fulltext_url, file_type in _fulltext_urls_from_meta(
             res.content
         ):
             res = await client.retrieve_fulltext(fulltext_url, expected_ftype=file_type)
             if res.error is None:
-                fulltexts.append((*res.as_tuple(), content_type))
+                fulltexts.append((*res.as_tuple(), file_type))
         return fulltexts
 
     # URL templates by hostname
@@ -378,7 +386,7 @@ async def retrieve_best_fulltexts(doi: str, client: DOIDownloader) -> list[tuple
         tmpl_url = httpx.URL(template.format(doi=quote(doi)))
         res = await client.retrieve_fulltext(tmpl_url, expected_ftype="pdf")
         if res.error is None:
-            return [(*res.as_tuple(), "application/pdf")]
+            return [(*res.as_tuple(), "pdf")]
 
     # Unpaywall
     logger.debug("Checking for Unpaywall for DOI %s", doi)
@@ -386,7 +394,7 @@ async def retrieve_best_fulltexts(doi: str, client: DOIDownloader) -> list[tuple
     if unpaywall_url:
         res = await client.retrieve_fulltext(unpaywall_url, expected_ftype="pdf")
         if res.error is None:
-            return [(*res.as_tuple(), "application/pdf")]
+            return [(*res.as_tuple(), "pdf")]
 
     logger.debug("No strategies succeeded for DOI %s", doi)
     return []
