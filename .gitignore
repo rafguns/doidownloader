@@ -54,3 +54,4 @@ nosetests.xml
 asynciotest.db
 dois.txt
 log.txt
+robots.txt
