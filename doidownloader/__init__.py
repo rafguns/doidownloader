@@ -3,4 +3,4 @@ from .doidownloader import (
     LookupResult,
     retrieve_fulltexts,
 )
-from .files import FileWithSameContentError, determine_extension, determine_filename
+from .files import FileWithSameContentError, determine_filetype, determine_filename

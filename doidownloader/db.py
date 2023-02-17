@@ -14,7 +14,7 @@ def prepare_tables(con: sqlite3.Connection) -> None:
             error text,
             status_code integer,
             content blob,
-            content_type text,
+            filetype text,
             last_change timestamp,
             constraint doi_fulltext_pk primary key (doi, url)
         )

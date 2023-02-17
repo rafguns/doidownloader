@@ -18,7 +18,7 @@ class FileWithSameContentError(Exception):
     """Exception: a file with the same contents already exists."""
 
 
-def determine_extension(content_type: str, content: bytes) -> str:
+def determine_filetype(content_type: str, content: bytes) -> str:
     try:
         content_type = content_type.split(";")[0]
         return mime_types[content_type]

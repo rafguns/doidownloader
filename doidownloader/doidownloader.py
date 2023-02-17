@@ -5,7 +5,7 @@ import logging
 import re
 import sqlite3
 from collections import defaultdict
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -24,7 +24,7 @@ from rich.progress import (
 )
 
 from . import db
-from .files import determine_extension
+from .files import determine_filetype
 
 __version__ = "0.0.1"
 
@@ -76,9 +76,16 @@ class LookupResult:
     error: str | None = None
     status_code: int | None = None
     content: bytes | None = None
+    filetype: str | None = None
 
     def as_tuple(self) -> tuple:
-        return (str(self.url), self.error, self.status_code, self.content)
+        return (
+            str(self.url),
+            self.error,
+            self.status_code,
+            self.content,
+            self.filetype,
+        )
 
 
 class DOIDownloader:
@@ -225,7 +232,7 @@ class DOIDownloader:
                 return await self.metadata_from_url(new_url, **kwargs)
 
         return LookupResult(
-            r.url, None, r.status_code, json.dumps(meta).encode("utf-8")
+            r.url, None, r.status_code, json.dumps(meta).encode("utf-8"), "json"
         )
 
     async def check_crawl_delay(self, url: httpx.URL, default_delay: int = 1) -> int:
@@ -250,8 +257,8 @@ class DOIDownloader:
         return self.crawl_delays[domain]
 
     async def retrieve_fulltext(
-        self, url: httpx.URL, expected_ftype: str, **kwargs
-    ) -> LookupResult | None:
+        self, url: httpx.URL, expected_filetype: str, **kwargs
+    ) -> LookupResult:
         """Retrieve full-text from URL.
 
         This only returns the full-text if the file type matches what was expected.
@@ -264,13 +271,15 @@ class DOIDownloader:
         except httpx.HTTPError as exc:
             return self.lookup_result_on_http_error(exc)
 
-        extension = determine_extension(r.headers.get("content-type"), r.content)
-        if extension == expected_ftype:
-            return LookupResult(r.url, None, r.status_code, r.content)
+        filetype = determine_filetype(r.headers.get("content-type"), r.content)
+        if filetype == expected_filetype:
+            return LookupResult(r.url, None, r.status_code, r.content, filetype)
 
         # Type is different from what we expected. Typically this is some HTML page
         # being shown instead of the desired content.
-        return LookupResult(r.url, "Not expected file type", r.status_code, r.content)
+        return LookupResult(
+            r.url, "Not expected file type", r.status_code, r.content, filetype
+        )
 
     async def best_unpaywall_url(
         self, doi: str, email: str = "raf.guns@uantwerpen.be"
@@ -300,9 +309,9 @@ async def retrieve_fulltexts(
     for doi in dois:
         if doi in inserted_dois:
             continue
-        task = asyncio.create_task(retrieve_best_fulltexts(doi, client), name=doi)
+        task = asyncio.create_task(retrieve_best_fulltext(doi, client), name=doi)
         tasks.add(task)
-        task.add_done_callback(lambda task: save_fulltexts(task, con))
+        task.add_done_callback(lambda task: save_fulltext(task, con))
 
     for task in track(
         asyncio.as_completed(tasks), description="Looking up DOIs...", total=len(tasks)
@@ -310,26 +319,25 @@ async def retrieve_fulltexts(
         await task
 
 
-def save_fulltexts(task: asyncio.Task, con: sqlite3.Connection) -> None:
+def save_fulltext(task: asyncio.Task, con: sqlite3.Connection) -> None:
     doi = task.get_name()
-    reslist = task.result()
+    res = task.result()
 
-    if not reslist:
+    if not res:
         logger.debug("No fulltext for DOI %s", doi)
         return
 
     logger.debug("Saving fulltext for DOI %s", doi)
-    for res in reslist:
-        try:
-            con.execute(
-                """insert into doi_fulltext values (?, ?, ?, ?, ?, ?, ?)""",
-                (doi, *res, datetime.now()),
-            )
-            con.commit()
-        except sqlite3.IntegrityError:
-            # Ignore - this may happen if same content is registered under
-            # multiple content-types, e.g., application/xml and text/xml
-            pass
+    try:
+        con.execute(
+            """insert into doi_fulltext values (?, ?, ?, ?, ?, ?, ?)""",
+            (doi, *res, datetime.now()),
+        )
+        con.commit()
+    except sqlite3.IntegrityError:
+        # Ignore - this may happen if same content is registered under
+        # multiple content-types, e.g., application/xml and text/xml
+        pass
 
 
 def _list2dict(list_of_tuples: list[tuple]) -> dict[str, set[str]]:
@@ -339,7 +347,7 @@ def _list2dict(list_of_tuples: list[tuple]) -> dict[str, set[str]]:
     return d
 
 
-def _fulltext_urls_from_meta(data: bytes) -> Iterator[tuple[httpx.URL, str]]:
+def _fulltext_urls_from_meta(data: bytes) -> tuple[httpx.URL, str] | None:
     meta_info = json.loads(data)
     meta_dict = _list2dict(meta_info)
 
@@ -351,50 +359,51 @@ def _fulltext_urls_from_meta(data: bytes) -> Iterator[tuple[httpx.URL, str]]:
         "citation_xml_url": "xml",
         "citation_full_html_url": "html",
     }
-    for field, file_type in meta_url_fields.items():
+    for field, filetype in meta_url_fields.items():
         if field not in meta_dict:
             continue
         for fulltext_url in meta_dict[field]:
-            yield httpx.URL(fulltext_url), file_type
+            return httpx.URL(fulltext_url), filetype
 
 
-async def retrieve_best_fulltexts(doi: str, client: DOIDownloader) -> list[tuple]:
+async def retrieve_best_fulltext(doi: str, client: DOIDownloader) -> tuple | None:
     # Does DOI link directly to PDF?
     logger.debug("Checking for direct link for DOI %s", doi)
     doi_url = httpx.URL("https://doi.org").join(f"/{quote(doi)}")
-    res = await client.retrieve_fulltext(doi_url, expected_ftype="pdf")
+    res = await client.retrieve_fulltext(doi_url, expected_filetype="pdf")
     if res.error is None:
-        return [(*res.as_tuple(), "pdf")]
+        return res.as_tuple()
 
     # Can we use information from HTML <meta> elements?
     logger.debug("Checking for metadata for DOI %s", doi)
     direct_url = res.url
     res = await client.metadata_from_url(direct_url)
     if res.error is None:
-        fulltexts = []
-        for fulltext_url, file_type in _fulltext_urls_from_meta(
-            res.content
-        ):
-            res = await client.retrieve_fulltext(fulltext_url, expected_ftype=file_type)
+        try:
+            fulltext_url, filetype = _fulltext_urls_from_meta(res.content)
+            res = await client.retrieve_fulltext(
+                fulltext_url, expected_filetype=filetype
+            )
             if res.error is None:
-                fulltexts.append((*res.as_tuple(), file_type))
-        return fulltexts
+                return res.as_tuple()
+        except TypeError:
+            pass
 
     # URL templates by hostname
     logger.debug("Checking for URL template for DOI %s", doi)
     for template in url_templates.get(direct_url.host, []):
         tmpl_url = httpx.URL(template.format(doi=quote(doi)))
-        res = await client.retrieve_fulltext(tmpl_url, expected_ftype="pdf")
+        res = await client.retrieve_fulltext(tmpl_url, expected_filetype="pdf")
         if res.error is None:
-            return [(*res.as_tuple(), "pdf")]
+            return res.as_tuple()
 
     # Unpaywall
     logger.debug("Checking for Unpaywall for DOI %s", doi)
     unpaywall_url = await client.best_unpaywall_url(doi)
     if unpaywall_url:
-        res = await client.retrieve_fulltext(unpaywall_url, expected_ftype="pdf")
+        res = await client.retrieve_fulltext(unpaywall_url, expected_filetype="pdf")
         if res.error is None:
-            return [(*res.as_tuple(), "pdf")]
+            return res.as_tuple()
 
     logger.debug("No strategies succeeded for DOI %s", doi)
-    return []
+    return None
