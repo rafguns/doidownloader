@@ -335,9 +335,7 @@ def save_fulltext(task: asyncio.Task, con: sqlite3.Connection) -> None:
         )
         con.commit()
     except sqlite3.IntegrityError:
-        # Ignore - this may happen if same content is registered under
-        # multiple content-types, e.g., application/xml and text/xml
-        pass
+        logger.warning("SQLite integrity error trying to insert DOI %s", doi)
 
 
 def _list2dict(list_of_tuples: list[tuple]) -> dict[str, set[str]]:
@@ -405,5 +403,4 @@ async def retrieve_best_fulltext(doi: str, client: DOIDownloader) -> tuple | Non
         if res.error is None:
             return res.as_tuple()
 
-    logger.debug("No strategies succeeded for DOI %s", doi)
     return None

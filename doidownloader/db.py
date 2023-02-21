@@ -23,7 +23,7 @@ def prepare_tables(con: sqlite3.Connection) -> None:
     con.commit()
 
 
-def dois_with_fulltext(con: sqlite3.Connection) -> set:
+def dois_with_fulltext(con: sqlite3.Connection) -> set[str]:
     return {
         row[0]
         for row in con.execute(
