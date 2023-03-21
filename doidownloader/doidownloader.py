@@ -363,6 +363,9 @@ def _fulltext_urls_from_meta(data: bytes) -> tuple[httpx.URL, str] | None:
         for fulltext_url in meta_dict[field]:
             return httpx.URL(fulltext_url), filetype
 
+    # No relevant meta fields found
+    return None
+
 
 async def retrieve_best_fulltext(doi: str, client: DOIDownloader) -> tuple | None:
     # Does DOI link directly to PDF?
