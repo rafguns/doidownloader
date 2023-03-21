@@ -225,11 +225,12 @@ class DOIDownloader:
         except lxml.etree.ParserError:
             return LookupResult(r.url, "Empty or unparseable page", r.status_code)
 
-        # Handle HTML-based redirects, used by Elsevier and possibly others
         if not meta:
+            # Handle HTML-based redirects, used by Elsevier and possibly others
             new_url = self.resolve_html_redirect(self.response_to_html(r))
             if new_url:
                 return await self.metadata_from_url(new_url, **kwargs)
+            return LookupResult(r.url, "No <meta> on HTML page", r.status_code)
 
         return LookupResult(
             r.url, None, r.status_code, json.dumps(meta).encode("utf-8"), "json"
