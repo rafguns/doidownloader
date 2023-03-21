@@ -336,7 +336,7 @@ def save_fulltext(task: asyncio.Task, con: sqlite3.Connection) -> None:
         )
         con.commit()
     except sqlite3.IntegrityError:
-        logger.warning("SQLite integrity error trying to insert DOI %s", doi)
+        logger.error("SQLite integrity error trying to insert DOI %s", doi)
 
 
 def _list2dict(list_of_tuples: list[tuple]) -> dict[str, set[str]]:
