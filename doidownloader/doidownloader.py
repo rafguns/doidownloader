@@ -1,14 +1,16 @@
-"""DOI downloader: legally download full-text documents  from a list of DOIs."""
+"""DOI downloader: legally download full-text documents from a list of DOIs."""
 import asyncio
 import json
 import logging
 import re
 import sqlite3
+import typing
 from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from types import TracebackType
 from urllib.parse import quote
 from urllib.robotparser import RobotFileParser
 
@@ -87,6 +89,8 @@ class LookupResult:
             self.filetype,
         )
 
+# For type annotation of DOIDownloader.__aenter__()
+U = typing.TypeVar("U", bound="DOIDownloader")
 
 class DOIDownloader:
     """Client for downloading full-texts from DOIs.
@@ -133,6 +137,18 @@ class DOIDownloader:
 
         # We maintain a lock per domain to ensure that the crawl delays are respected.
         self.domain_locks: dict[str, asyncio.Lock] = {}
+
+    async def __aenter__(self: U) -> U:
+        await self.client.__aenter__()
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None = None,
+        exc_value: BaseException | None = None,
+        traceback: TracebackType | None = None,
+    ) -> None:
+        await self.client.__aexit__(exc_type, exc_value, traceback)
 
     @staticmethod
     def response_to_html(response: httpx.Response) -> lxml.html.HtmlElement:
