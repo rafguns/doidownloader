@@ -89,8 +89,10 @@ class LookupResult:
             self.filetype,
         )
 
+
 # For type annotation of DOIDownloader.__aenter__()
 U = typing.TypeVar("U", bound="DOIDownloader")
+
 
 class DOIDownloader:
     """Client for downloading full-texts from DOIs.
@@ -152,7 +154,12 @@ class DOIDownloader:
 
     @staticmethod
     def response_to_html(response: httpx.Response) -> lxml.html.HtmlElement:
-        html = lxml.html.fromstring(response.text, base_url=str(response.url))
+        html = lxml.html.fromstring(
+            # This avoids errors when there's an XML declaration with encoding.
+            # See issue #18.
+            bytes(response.text, encoding="utf-8"),
+            base_url=str(response.url),
+        )
         # So we don't have to worry about relative links further on:
         html.make_links_absolute()
 
