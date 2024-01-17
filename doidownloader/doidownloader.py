@@ -385,6 +385,9 @@ def _fulltext_urls_from_meta(data: bytes) -> tuple[httpx.URL, str] | None:
         if field not in meta_dict:
             continue
         for fulltext_url in meta_dict[field]:
+            # Skip blank URLs
+            if fulltext_url.strip() == "":
+                continue
             return httpx.URL(fulltext_url), filetype
 
     # No relevant meta fields found
