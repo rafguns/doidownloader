@@ -1,5 +1,6 @@
 """DOI downloader: legally download full-text documents from a list of DOIs."""
 import asyncio
+import contextlib
 import json
 import logging
 import re
@@ -161,7 +162,8 @@ class DOIDownloader:
             base_url=str(response.url),
         )
         # So we don't have to worry about relative links further on:
-        html.make_links_absolute()
+        with contextlib.suppress(ValueError):
+            html.make_links_absolute()
 
         return html
 
