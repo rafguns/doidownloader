@@ -2,12 +2,12 @@ import asyncio
 import sqlite3
 
 from .db import prepare_tables
-from .doidownloader import DOIDownloader, retrieve_fulltexts
+from .doidownloader import DOIDownloader, save_fulltexts_from_dois
 
 
 async def store_fulltexts(dois: list[str], con: sqlite3.Connection) -> None:
     async with DOIDownloader() as client:
-        await retrieve_fulltexts(dois, con, client)
+        await save_fulltexts_from_dois(dois, con, client)
 
 
 if __name__ == "__main__":

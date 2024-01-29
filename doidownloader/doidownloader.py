@@ -1,12 +1,10 @@
 """DOI downloader: legally download full-text documents from a list of DOIs."""
 import asyncio
-import contextlib
 import json
 import logging
-import re
 import sqlite3
+import ssl
 import typing
-from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
@@ -26,7 +24,7 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 
-from . import db
+from . import db, html
 from .files import determine_filetype
 
 __version__ = "0.0.1"
@@ -154,61 +152,16 @@ class DOIDownloader:
         await self.client.__aexit__(exc_type, exc_value, traceback)
 
     @staticmethod
-    def response_to_html(response: httpx.Response) -> lxml.html.HtmlElement:
-        html = lxml.html.fromstring(
-            # This avoids errors when there's an XML declaration with encoding.
-            # See issue #18.
-            bytes(response.text, encoding="utf-8"),
-            base_url=str(response.url),
-        )
-        # So we don't have to worry about relative links further on:
-        with contextlib.suppress(ValueError):
-            html.make_links_absolute()
-
-        return html
-
-    @staticmethod
-    def lookup_result_on_http_error(exception: httpx.HTTPError) -> LookupResult:
-        error = f"HTTP error: {exception}"
+    def lookup_result_on_http_error(
+        exception: httpx.HTTPError, url: httpx.URL
+    ) -> LookupResult:
         status_code = (
             exception.response.status_code
             if isinstance(exception, httpx.HTTPStatusError)
             else None
         )
 
-        return LookupResult(exception.request.url, error, status_code)
-
-    @staticmethod
-    def resolve_html_redirect(html: lxml.html.HtmlElement) -> httpx.URL | None:
-        try:
-            redirect = html.cssselect(
-                'meta[http-equiv="REFRESH"], meta[http-equiv="refresh"]'
-            )[0]
-        except IndexError:
-            return None
-
-        # Parse out the URL from the attribute (e.g. `content="5; url=/foo"`)
-        # We use separate regexes for variants with and without quote marks.
-        m = re.search(
-            r'url\s*=\s*[\'"](.*?)[\'"]', redirect.attrib.get("content"), re.IGNORECASE
-        ) or re.search(r"url\s*=\s*(.+)", redirect.attrib.get("content"), re.IGNORECASE)
-        if not m:
-            return None
-
-        redirect_url = m[1]
-        return httpx.URL(html.base_url).join(redirect_url)
-
-    @staticmethod
-    def metadata_from_html(html: lxml.html.HtmlElement) -> list[tuple[str, str]]:
-        """Return all Google Scholar and Dublin Core meta info."""
-        meta_els = html.cssselect(
-            'meta[name^="citation_"], meta[name^="dc."], meta[name^="DC."]'
-        )
-        return [
-            (el.attrib["name"], el.attrib["content"])
-            for el in meta_els
-            if "content" in el.attrib
-        ]
+        return LookupResult(url, f"HTTP error: {exception}", status_code)
 
     async def get(
         self,
@@ -239,20 +192,20 @@ class DOIDownloader:
         """Retrieve HTML metadata for URL."""
         try:
             r = await self.get(url, **kwargs)
-        except httpx.HTTPError as exc:
-            return self.lookup_result_on_http_error(exc)
+        except (httpx.HTTPError, ssl.SSLCertVerificationError) as exc:
+            return self.lookup_result_on_http_error(exc, url)
 
         # Retrieve metadata
         try:
-            meta = self.metadata_from_html(self.response_to_html(r))
-        except AttributeError:
-            return LookupResult(r.url, "Not HTML page", r.status_code)
-        except lxml.etree.ParserError:
-            return LookupResult(r.url, "Empty or unparseable page", r.status_code)
+            meta = html.metadata_from_html(self.response_to_html(r))
+        except (AttributeError, lxml.etree.ParserError):
+            return LookupResult(
+                r.url, "Not HTML page, or empty/unparseable page", r.status_code
+            )
 
         if not meta:
             # Handle HTML-based redirects, used by Elsevier and possibly others
-            new_url = self.resolve_html_redirect(self.response_to_html(r))
+            new_url = html.resolve_html_redirect(html.response_to_html(r))
             if new_url:
                 return await self.metadata_from_url(new_url, **kwargs)
             return LookupResult(r.url, "No <meta> on HTML page", r.status_code)
@@ -293,9 +246,13 @@ class DOIDownloader:
 
         """
         try:
-            r = await self.get(url, follow_redirects=True, **kwargs)
-        except httpx.HTTPError as exc:
-            return self.lookup_result_on_http_error(exc)
+            r = await self.get(url, **kwargs)
+            # Follow redirects
+            if 300 <= r.status_code <= 399:  # noqa: PLR2004
+                new_url = r.next_request
+                r = await self.retrieve_fulltext(new_url, **kwargs)
+        except (httpx.HTTPError, ssl.SSLCertVerificationError) as exc:
+            return self.lookup_result_on_http_error(exc, url)
 
         filetype = determine_filetype(r.headers.get("content-type"), r.content)
         if filetype == expected_filetype:
@@ -323,7 +280,7 @@ class DOIDownloader:
         return httpx.URL(data["best_oa_location"]["url"])
 
 
-async def retrieve_fulltexts(
+async def save_fulltexts_from_dois(
     dois: list[str], con: sqlite3.Connection, client: DOIDownloader
 ) -> None:
     """Retrieve and save metadata for all DOIs."""
@@ -335,9 +292,8 @@ async def retrieve_fulltexts(
     for doi in dois:
         if doi in inserted_dois:
             continue
-        task = asyncio.create_task(retrieve_best_fulltext(doi, client), name=doi)
+        task = asyncio.create_task(save_fulltext_from_doi(doi, con, client))
         tasks.add(task)
-        task.add_done_callback(lambda task: save_fulltext(task, con))
 
     for task in track(
         asyncio.as_completed(tasks), description="Looking up DOIs...", total=len(tasks)
@@ -345,9 +301,12 @@ async def retrieve_fulltexts(
         await task
 
 
-def save_fulltext(task: asyncio.Task, con: sqlite3.Connection) -> None:
-    doi = task.get_name()
-    res = task.result()
+async def save_fulltext_from_doi(
+    doi: str,
+    con: sqlite3.Connection,
+    client: DOIDownloader,
+) -> None:
+    res = await retrieve_best_fulltext(doi, client)
 
     if not res:
         logger.debug("No fulltext for DOI %s", doi)
@@ -364,38 +323,6 @@ def save_fulltext(task: asyncio.Task, con: sqlite3.Connection) -> None:
         logger.error("SQLite integrity error trying to insert DOI %s", doi)
 
 
-def _list2dict(list_of_tuples: list[tuple]) -> dict[str, set[str]]:
-    d = defaultdict(set)
-    for k, v in list_of_tuples:
-        d[k].add(v)
-    return d
-
-
-def _fulltext_urls_from_meta(data: bytes) -> tuple[httpx.URL, str] | None:
-    meta_info = json.loads(data)
-    meta_dict = _list2dict(meta_info)
-
-    # These are the main fields used in HTML <meta> elements, with their file type.
-    # Note: We do NOT include "citation_fulltext_html_url". This is used by Springer to
-    # refer to landing pages rather than proper full-text documents.
-    meta_url_fields = {
-        "citation_pdf_url": "pdf",
-        "citation_xml_url": "xml",
-        "citation_full_html_url": "html",
-    }
-    for field, filetype in meta_url_fields.items():
-        if field not in meta_dict:
-            continue
-        for fulltext_url in meta_dict[field]:
-            # Skip blank URLs
-            if fulltext_url.strip() == "":
-                continue
-            return httpx.URL(fulltext_url), filetype
-
-    # No relevant meta fields found
-    return None
-
-
 async def retrieve_best_fulltext(doi: str, client: DOIDownloader) -> tuple | None:
     # Does DOI link directly to PDF?
     logger.debug("Checking for direct link for DOI %s", doi)
@@ -410,7 +337,7 @@ async def retrieve_best_fulltext(doi: str, client: DOIDownloader) -> tuple | Non
     res = await client.metadata_from_url(direct_url)
     if res.error is None:
         try:
-            fulltext_url, filetype = _fulltext_urls_from_meta(res.content)
+            fulltext_url, filetype = html.fulltext_urls_from_meta(res.content)
             res = await client.retrieve_fulltext(
                 fulltext_url, expected_filetype=filetype
             )
