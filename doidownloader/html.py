@@ -31,7 +31,10 @@ def resolve_html_redirect(html: lxml.html.HtmlElement) -> httpx.URL | None:
         return None
 
     redirect_url = m[1]
-    return httpx.URL(html.base_url).join(redirect_url)
+    try:
+        return httpx.URL(html.base_url).join(redirect_url)
+    except TypeError:  # no base URL
+        return httpx.URL(redirect_url)
 
 
 def metadata_from_html(html: lxml.html.HtmlElement) -> list[tuple[str, str]]:
