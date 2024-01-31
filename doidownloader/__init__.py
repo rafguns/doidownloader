@@ -1,6 +1,6 @@
 from .doidownloader import (
     DOIDownloader,
     LookupResult,
-    retrieve_fulltexts,
+    save_fulltexts_from_dois,
 )
-from .files import FileWithSameContentError, determine_filetype, determine_filename
+from .files import FileWithSameContentError, determine_filename, determine_filetype
