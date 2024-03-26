@@ -5,10 +5,9 @@ import logging
 import sqlite3
 import ssl
 import typing
-from collections.abc import Iterable
+from collections.abc import Iterable, MutableMapping
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 from types import TracebackType
 from urllib.parse import quote
 from urllib.robotparser import RobotFileParser
@@ -114,8 +113,7 @@ class DOIDownloader:
     def __init__(
         self,
         client: httpx.Client | None = None,
-        crawl_delays: dict[str, int] | None = None,
-        robots_cache_file: str = "robots.txt",
+        crawl_delays: MutableMapping[str, int] | None = None,
     ) -> None:
         self.client = client or httpx.AsyncClient(
             timeout=10.0,
@@ -126,18 +124,9 @@ class DOIDownloader:
                 )
             },
         )
-
-        self.crawl_delays: dict[str, int] = crawl_delays or {}
-        try:
-            with open(robots_cache_file) as fh_robots:
-                for line in fh_robots:
-                    domain, delay = line.strip().split()
-                    self.crawl_delays[domain] = int(delay)
-        except FileNotFoundError:
-            Path(robots_cache_file).touch()
-
         # We maintain a lock per domain to ensure that the crawl delays are respected.
         self.domain_locks: dict[str, asyncio.Lock] = {}
+        self.crawl_delays: MutableMapping[str, int] = crawl_delays or {}
 
     async def __aenter__(self: U) -> U:
         await self.client.__aenter__()
@@ -230,8 +219,6 @@ class DOIDownloader:
                 self.crawl_delays[domain] = int(rp.crawl_delay("*") or default_delay)
             except httpx.HTTPError:  # HTTP error or no robots.txt
                 self.crawl_delays[domain] = default_delay
-            with open("robots.txt", "a") as fh:
-                fh.write(f"{domain}\t{self.crawl_delays[domain]}\n")
 
         return self.crawl_delays[domain]
 
