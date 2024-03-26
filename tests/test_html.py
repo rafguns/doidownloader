@@ -41,8 +41,23 @@ def test_resolve_html_redirect_no_redirect(html_string):
     assert html.resolve_html_redirect(html_el) is None
 
 
-def test_metadata_from_html():
-    ...
+@pytest.mark.parametrize(
+    ("html_string", "metadata"),
+    [
+        (
+            """<meta name="description" content="Review of periodical articles">
+            <meta name="dc.identifier" content="doi:10.1017/S0963926820000012">
+            <meta name="citation_doi" content="10.1017/S0963926820000012">""",
+            [
+                ("dc.identifier", "doi:10.1017/S0963926820000012"),
+                ("citation_doi", "10.1017/S0963926820000012"),
+            ],
+        )
+    ],
+)
+def test_metadata_from_html(html_string, metadata):
+    html_el = lxml.html.fromstring(html_string, base_url="https://example.com")
+    assert html.metadata_from_html(html_el) == metadata
 
 
 def test_response_to_html():
