@@ -56,3 +56,5 @@ ignore = ["ANN002", "ANN003", "ANN101"]
 [tool.ruff.per-file-ignores]
 # Ignore unused imports in __init__.py
 "__init__.py" = ["F401"]
+# Ignore missing type annotations in tests
+"tests/*" = ["ANN"]
