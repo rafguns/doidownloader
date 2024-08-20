@@ -50,7 +50,7 @@ async def store_fulltexts(dois: list[str], con: sqlite3.Connection) -> None:
 if __name__ == "__main__":
     with open("dois.txt") as fh:
         dois = [line.strip() for line in fh]
-    con = sqlite3.connect("asynciotest.db")
+    con = sqlite3.connect("doi-fulltexts.db")
     prepare_tables(con)
 
     asyncio.run(store_fulltexts(dois, con))

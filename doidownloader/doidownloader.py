@@ -1,4 +1,13 @@
-"""DOI downloader: legally download full-text documents from a list of DOIs."""
+"""**doidownloader: You give it DOIs, it gives you the article PDFs.**
+
+It is surprisingly tricky to reliably obtain the full PDF of a scientific
+publication given its DOI. This Python package aims to do just that: you give it a list
+of DOIs, and it will download the full-text PDFs (or other formats if no PDF is
+available), taking care of much of the complexity. It ensures that lookups to
+different domains can happen asynchronously (i.e., one slow website won't stall all
+your other downloads).
+
+"""
 import asyncio
 import json
 import logging
@@ -95,18 +104,29 @@ U = typing.TypeVar("U", bound="DOIDownloader")
 class DOIDownloader:
     """Client for downloading full-texts from DOIs.
 
-    In principle, you'll mainly use this for the `save_metadata` and `save_fulltext`
-    functions. Example usage::
+    It is surprisingly tricky to reliably obtain the full PDF of a scientific
+    publication given its DOI. This class aims to do just that: you give it a list of
+    DOIs, and it will download the PDF versions (or other formats if no PDF is
+    available), taking care of much of the complexity. It ensures that lookups to
+    different domains can happen asynchronously (i.e., one slow website won't stall all
+    your other downloads).
 
-        import sqlite3
-        import doidownloader
+    Example usage
+    -------------
 
-        con = sqlite3.connect("somedois.db")
-        dois_to_find = ["10.1108/JCRPP-02-2020-0025", "10.23860/JMLE-2020-12-3-1"]
+    ```python
+    import sqlite3
+    import doidownloader
 
-        client = DOIDownloader()
-        save_metadata(dois_to_find, con, client)
-        save_fulltext(con, client)
+    # SQLite database where results will be stored
+    con = sqlite3.connect("somedois.db")
+    doidownloader.db.prepare_tables(con)
+    # List of DOIs to search for
+    dois_to_find = ["10.1108/JCRPP-02-2020-0025", "10.23860/JMLE-2020-12-3-1"]
+
+    async with doidownloader.DOIDownloader() as client:
+        await save_fulltexts_from_dois(dois, con, client)
+    ```
 
     """
 
