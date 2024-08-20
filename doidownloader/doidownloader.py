@@ -1,4 +1,4 @@
-"""**doidownloader: You give it DOIs, it gives you the article PDFs.**
+"""📝⬇️ DOIdownloader: You give it DOIs, it gives you the article PDFs.**
 
 It is surprisingly tricky to reliably obtain the full PDF of a scientific
 publication given its DOI. This Python package aims to do just that: you give it a list
@@ -103,13 +103,6 @@ U = typing.TypeVar("U", bound="DOIDownloader")
 
 class DOIDownloader:
     """Client for downloading full-texts from DOIs.
-
-    It is surprisingly tricky to reliably obtain the full PDF of a scientific
-    publication given its DOI. This class aims to do just that: you give it a list of
-    DOIs, and it will download the PDF versions (or other formats if no PDF is
-    available), taking care of much of the complexity. It ensures that lookups to
-    different domains can happen asynchronously (i.e., one slow website won't stall all
-    your other downloads).
 
     Example usage
     -------------

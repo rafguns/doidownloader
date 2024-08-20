@@ -1,6 +1,6 @@
-# doidownloader
+# DOIdownloader
 
-**doidownloader: You give it DOIs, it gives you the article PDFs.**
+**📝⬇️ DOIdownloader: You give it DOIs, it gives you the article PDFs.**
 
 It is surprisingly tricky to reliably obtain the full PDF of a scientific
 publication given its DOI. This Python package aims to do just that: you give it a list of
@@ -9,9 +9,9 @@ available), taking care of much of the complexity. It ensures that lookups to
 different domains can happen asynchronously (i.e., one slow website won't stall all
 your other downloads).
 
-Doidownloader gives precedence to the publisher-formatted version (the so-called ‘Version of Record’),
+DOIdownloader gives precedence to the publisher-formatted version (the so-called ‘Version of Record’),
 and will try downloading an open access pre- or postprint if you cannot access the publisher version.
-Importantly, doidownloader only tries downloading through routes that are widely
+Importantly, DOIdownloader only tries downloading through routes that are widely
 considered to be legal. In more concrete terms, we do *not* download from Sci-Hub or
 similar platforms.
 
