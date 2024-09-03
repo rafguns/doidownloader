@@ -60,7 +60,13 @@ async def store_fulltexts(dois: list[str], con: sqlite3.Connection) -> None:
     type=click.File(),
     help="Plain-text file, where each line contains one DOI",
 )
-def main(dois: list[str], fh: click.File) -> list[str]:
+@click.option(
+    "--database",
+    type=click.Path(),
+    default=Path("doi-fulltexts.db"),
+    help="SQLite database that will store the downloaded PDFs"
+)
+def main(dois: list[str], fh: click.File, database: click.Path) -> list[str]:
     """DOIdownloader: You give it DOIs, it gives you the article PDFs.
     Either supply a list of DOIs as arguments, e.g.:
 
@@ -70,6 +76,11 @@ def main(dois: list[str], fh: click.File) -> list[str]:
 
         python -m doidownloader -f dois.txt
 
+    Results are stored in a SQLite database named 'doi-fulltexts.db'.
+    To store in another file:
+
+        python -m doidonwloader -f dois.txt --database my-database.sqlite
+
     """
     if dois and fh:
         print(  # noqa: T201
@@ -77,7 +88,7 @@ def main(dois: list[str], fh: click.File) -> list[str]:
             file=sys.stderr,
         )
     dois = dois or [line.strip() for line in fh]
-    con = sqlite3.connect("doi-fulltexts.db")
+    con = sqlite3.connect(database)
     prepare_tables(con)
 
     asyncio.run(store_fulltexts(dois, con))
