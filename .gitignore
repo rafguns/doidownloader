@@ -51,7 +51,7 @@ nosetests.xml
 .vscode
 
 # Project-specific files
-asynciotest.db
+doi-fulltexts.db
 dois.txt
 log.txt
 robots.txt
