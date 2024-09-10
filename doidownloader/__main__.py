@@ -79,7 +79,7 @@ def main(dois: list[str], fh: click.File, database: click.Path) -> list[str]:
     Results are stored in a SQLite database named 'doi-fulltexts.db'.
     To store in another file:
 
-        python -m doidonwloader -f dois.txt --database my-database.sqlite
+        python -m doidownloader -f dois.txt --database my-database.sqlite
 
     """
     if dois and fh:
