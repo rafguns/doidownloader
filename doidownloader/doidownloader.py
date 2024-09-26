@@ -117,6 +117,7 @@ class DOIDownloader:
         self,
         client: httpx.Client | None = None,
         crawl_delays: MutableMapping[str, int] | None = None,
+        email_address: str | None = None,
     ) -> None:
         self.client = client or httpx.AsyncClient(
             timeout=10.0,
@@ -130,6 +131,7 @@ class DOIDownloader:
         # We maintain a lock per domain to ensure that the crawl delays are respected.
         self.domain_locks: dict[str, asyncio.Lock] = {}
         self.crawl_delays: MutableMapping[str, int] = crawl_delays or {}
+        self.email_address = email_address
 
     async def __aenter__(self: U) -> U:
         await self.client.__aenter__()
@@ -254,10 +256,13 @@ class DOIDownloader:
             r.url, "Not expected file type", r.status_code, r.content, filetype
         )
 
-    async def best_unpaywall_url(
-        self, doi: str, email: str = "raf.guns@uantwerpen.be"
-    ) -> httpx.URL | None:
-        url = httpx.URL(f"https://api.unpaywall.org/v2/{quote(doi)}?email={email}")
+    async def best_unpaywall_url(self, doi: str) -> httpx.URL | None:
+        if not self.email_address:
+            # Email address is required, see http://unpaywall.org/products/api
+            return None
+        url = httpx.URL(
+            f"https://api.unpaywall.org/v2/{quote(doi)}?email={self.email_address}"
+        )
         try:
             r = await self.get(url)
         except httpx.HTTPError:

@@ -45,9 +45,11 @@ class CrawlDelays(MutableMapping):
         return len(self.delays)
 
 
-async def store_fulltexts(dois: list[str], con: sqlite3.Connection) -> None:
+async def store_fulltexts(
+    dois: list[str], con: sqlite3.Connection, email: str | None
+) -> None:
     crawl_delays = CrawlDelays("robots.txt")
-    async with DOIDownloader(crawl_delays=crawl_delays) as client:
+    async with DOIDownloader(crawl_delays=crawl_delays, email_address=email) as client:
         await save_fulltexts_from_dois(dois, con, client)
 
 
@@ -64,9 +66,14 @@ async def store_fulltexts(dois: list[str], con: sqlite3.Connection) -> None:
     "--database",
     type=click.Path(),
     default=Path("doi-fulltexts.db"),
-    help="SQLite database that will store the downloaded PDFs"
+    help="SQLite database that will store the downloaded PDFs",
 )
-def main(dois: list[str], fh: click.File, database: click.Path) -> list[str]:
+@click.option(
+    "--email", type=str, help="Email address, which can speed up lookups in Unpaywall"
+)
+def main(
+    dois: list[str], fh: click.File, database: click.Path, email: str | None
+) -> list[str]:
     """DOIdownloader: You give it DOIs, it gives you the article PDFs.
     Either supply a list of DOIs as arguments, e.g.:
 
@@ -81,6 +88,11 @@ def main(dois: list[str], fh: click.File, database: click.Path) -> list[str]:
 
         python -m doidownloader -f dois.txt --database my-database.sqlite
 
+    It is recommended to supply an email address for Unpaywall lookups (see
+    https://unpaywall.org/products/api):
+
+        python -m doidownloader -f dois.txt --email youraddress@example.com
+
     """
     if dois and fh:
         print(  # noqa: T201
@@ -91,7 +103,7 @@ def main(dois: list[str], fh: click.File, database: click.Path) -> list[str]:
     con = sqlite3.connect(database)
     prepare_tables(con)
 
-    asyncio.run(store_fulltexts(dois, con))
+    asyncio.run(store_fulltexts(dois, con, email))
 
 
 if __name__ == "__main__":
