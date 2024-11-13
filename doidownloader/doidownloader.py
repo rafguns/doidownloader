@@ -267,8 +267,12 @@ class DOIDownloader:
         )
 
     async def best_unpaywall_url(self, doi: str) -> httpx.URL | None:
-        query = f"?email={self.email_address}" if self.email_address else ""
-        url = httpx.URL(f"https://api.unpaywall.org/v2/{quote(doi)}{query}")
+        if not self.email_address:
+            # Email address is required, see http://unpaywall.org/products/api
+            return None
+        url = httpx.URL(
+            f"https://api.unpaywall.org/v2/{quote(doi)}?email={self.email_address}"
+        )
         try:
             r = await self.get(url)
         except httpx.HTTPError:
