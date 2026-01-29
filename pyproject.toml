@@ -7,8 +7,10 @@ name = "doidownloader"
 authors = [{name = "Raf Guns", email = "raf.guns@uantwerpen.be"}]
 license = {file = "LICENSE"}
 classifiers = ["License :: OSI Approved :: MIT License"]
-dynamic = ["version", "description"]
-requires-python = ">=3.10"
+version = "0.1.0"
+description = "DOIdownloader: You give it DOIs, it gives you the article PDFs."
+readme = "README.md"
+requires-python = ">=3.12"
 dependencies = [
     "click>=8.0",
     "httpx>=0.23.3",
@@ -20,7 +22,7 @@ dependencies = [
 Home = "https://github.com/rafguns/doidownloader/"
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py312"
 # See https://beta.ruff.rs/docs/rules/
 select = [
     "A", # builtin shadowing
