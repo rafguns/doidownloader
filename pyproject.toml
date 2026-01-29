@@ -24,7 +24,7 @@ Home = "https://github.com/rafguns/doidownloader/"
 [tool.ruff]
 target-version = "py312"
 # See https://beta.ruff.rs/docs/rules/
-select = [
+lint.select = [
     "A", # builtin shadowing
     "ANN", # annotations
     "ARG", # unsued arguments
@@ -54,9 +54,9 @@ select = [
     "YTT", # sys.version
 ]
 # Don' warn about type annotations for self, *args, **kwargs
-ignore = ["ANN002", "ANN003", "ANN101"]
+lint.ignore = ["ANN002", "ANN003"²]
 
-[tool.ruff.per-file-ignores]
+[tool.ruff.lint.per-file-ignores]
 # Ignore unused imports in __init__.py
 "__init__.py" = ["F401"]
 # Ignore missing type annotations in tests
