@@ -38,7 +38,7 @@ async def store_fulltexts(
 )
 def main(
     dois: list[str], fh: click.File, database: click.Path, email: str | None
-) -> list[str]:
+) -> None:
     """DOIdownloader: You give it DOIs, it gives you the article PDFs.
     Either supply a list of DOIs as arguments, e.g.:
 
@@ -64,8 +64,8 @@ def main(
             "WARNING: Both a list of DOIs and a file were given. File will be ignored.",
             file=sys.stderr,
         )
-    dois = dois or [line.strip() for line in fh]
-    con = sqlite3.connect(database)
+    dois = dois or [line.strip() for line in fh]  # pyright: ignore[reportGeneralTypeIssues]
+    con = sqlite3.connect(str(database))
     prepare_tables(con)
 
     asyncio.run(store_fulltexts(dois, con, email))

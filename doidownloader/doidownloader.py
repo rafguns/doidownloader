@@ -13,7 +13,7 @@ from urllib.robotparser import RobotFileParser
 
 import httpx
 import lxml
-import lxml.html
+import lxml.etree
 from rich.progress import (
     BarColumn,
     MofNCompleteColumn,
@@ -115,7 +115,7 @@ class DOIDownloader:
 
     def __init__(
         self,
-        client: httpx.Client | None = None,
+        client: httpx.AsyncClient | None = None,
         crawl_delays: MutableMapping[str, int] | None = None,
         email_address: str | None = None,
     ) -> None:
@@ -147,7 +147,7 @@ class DOIDownloader:
 
     @staticmethod
     def lookup_result_on_http_error(
-        exception: httpx.HTTPError, url: httpx.URL
+        exception: httpx.HTTPError | ssl.SSLCertVerificationError, url: httpx.URL
     ) -> LookupResult:
         status_code = (
             exception.response.status_code
@@ -176,11 +176,13 @@ class DOIDownloader:
             await asyncio.sleep(crawl_delay)
 
             logger.debug("Retrieving url %s", url)
-            r = await self.client.get(url, follow_redirects=follow_redirects, **kwargs)
+            response = await self.client.get(
+                url, follow_redirects=follow_redirects, **kwargs
+            )
             if raise_for_status:
-                r.raise_for_status()
+                response.raise_for_status()
 
-        return r
+        return response
 
     async def metadata_from_url(self, url: httpx.URL, **kwargs) -> LookupResult:
         """Retrieve HTML metadata for URL."""
@@ -191,7 +193,7 @@ class DOIDownloader:
 
         # Retrieve metadata
         try:
-            meta = html.metadata_from_html(self.response_to_html(r))
+            meta = html.metadata_from_html(html.response_to_html(r))
         except (AttributeError, lxml.etree.ParserError):
             return LookupResult(
                 r.url, "Not HTML page, or empty/unparseable page", r.status_code
@@ -238,22 +240,26 @@ class DOIDownloader:
 
         """
         try:
-            r = await self.get(url, **kwargs)
-            # Follow redirects
-            if 300 <= r.status_code <= 399:  # noqa: PLR2004
-                new_url = r.next_request
-                r = await self.retrieve_fulltext(new_url, **kwargs)
+            response = await self.get(url, **kwargs)
         except (httpx.HTTPError, ssl.SSLCertVerificationError) as exc:
             return self.lookup_result_on_http_error(exc, url)
 
-        filetype = determine_filetype(r.headers.get("content-type"), r.content)
+        filetype = determine_filetype(
+            response.headers.get("content-type"), response.content
+        )
         if filetype == expected_filetype:
-            return LookupResult(r.url, None, r.status_code, r.content, filetype)
+            return LookupResult(
+                response.url, None, response.status_code, response.content, filetype
+            )
 
         # Type is different from what we expected. Typically this is some HTML page
         # being shown instead of the desired content.
         return LookupResult(
-            r.url, "Not expected file type", r.status_code, r.content, filetype
+            response.url,
+            "Not expected file type",
+            response.status_code,
+            response.content,
+            filetype,
         )
 
     async def best_unpaywall_url(self, doi: str) -> httpx.URL | None:
@@ -330,9 +336,9 @@ async def retrieve_best_fulltext(doi: str, client: DOIDownloader) -> tuple | Non
     logger.debug("Checking for metadata for DOI %s", doi)
     direct_url = res.url
     res = await client.metadata_from_url(direct_url)
-    if res.error is None:
+    if res.content is not None:
         try:
-            fulltext_url, filetype = html.fulltext_urls_from_meta(res.content)
+            fulltext_url, filetype = html.fulltext_urls_from_meta(res.content)  # pyright: ignore[reportGeneralTypeIssues]
             res = await client.retrieve_fulltext(
                 fulltext_url, expected_filetype=filetype
             )
