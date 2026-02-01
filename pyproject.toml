@@ -54,7 +54,7 @@ lint.select = [
     "YTT", # sys.version
 ]
 # Don' warn about type annotations for self, *args, **kwargs
-lint.ignore = ["ANN002", "ANN003"²]
+lint.ignore = ["ANN002", "ANN003"]
 
 [tool.ruff.lint.per-file-ignores]
 # Ignore unused imports in __init__.py
