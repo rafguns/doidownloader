@@ -1,12 +1,10 @@
 import asyncio
 import json
 import logging
-import sqlite3
 import ssl
 import typing
-from collections.abc import Iterable, MutableMapping
+from collections.abc import MutableMapping
 from dataclasses import dataclass
-from datetime import datetime
 from types import TracebackType
 from urllib.parse import quote
 from urllib.robotparser import RobotFileParser
@@ -14,15 +12,8 @@ from urllib.robotparser import RobotFileParser
 import httpx
 import lxml
 import lxml.etree
-from rich.progress import (
-    BarColumn,
-    MofNCompleteColumn,
-    Progress,
-    TextColumn,
-    TimeRemainingColumn,
-)
 
-from . import db, html
+from . import html
 from .files import determine_filetype
 
 __version__ = "0.0.1"
@@ -34,33 +25,6 @@ handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)
 logger.addHandler(handler)
 
 logger.debug("Application start")
-
-url_templates = {
-    "link.springer.com": [
-        "https://link.springer.com/content/pdf/{doi}.pdf",
-        "https://page-one.springer.com/pdf/preview/{doi}",
-    ],
-    "www.magonlinelibrary.com": ["https://www.magonlinelibrary.com/doi/pdf/{doi}"],
-    "onlinelibrary.wiley.com": [
-        "https://onlinelibrary.wiley.com/doi/pdf/{doi}",
-        "https://onlinelibrary.wiley.com/doi/pdfdirect/{doi}",
-    ],
-    "www.tandfonline.com": ["https://www.tandfonline.com/doi/pdf/{doi}"],
-    "www.worldscientific.com": ["https://www.worldscientific.com/doi/pdf/{doi}"],
-    "www.jstor.org": ["https://www.jstor.org/stable/pdf/{doi}.pdf"],
-    "www.emerald.com": ["https://www.emerald.com/insight/content/doi/{doi}/full/pdf"],
-}
-
-
-def track(sequence: Iterable, *args, **kwargs) -> Iterable:
-    progress = Progress(
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        MofNCompleteColumn(),
-        TimeRemainingColumn(),
-    )
-    with progress:
-        yield from progress.track(sequence, *args, **kwargs)
 
 
 @dataclass(frozen=True)
@@ -279,88 +243,3 @@ class DOIDownloader:
             return None
 
         return httpx.URL(data["best_oa_location"]["url"])
-
-
-async def save_fulltexts_from_dois(
-    dois: list[str], con: sqlite3.Connection, client: DOIDownloader
-) -> None:
-    """Retrieve and save metadata for all DOIs."""
-    # With this, we can run the script in multiple batches.
-    inserted_dois = db.dois_with_fulltext(con)
-
-    tasks = set()
-
-    for doi in dois:
-        if doi in inserted_dois:
-            continue
-        task = asyncio.create_task(save_fulltext_from_doi(doi, con, client))
-        tasks.add(task)
-
-    for task in track(
-        asyncio.as_completed(tasks), description="Looking up DOIs...", total=len(tasks)
-    ):
-        await task
-
-
-async def save_fulltext_from_doi(
-    doi: str,
-    con: sqlite3.Connection,
-    client: DOIDownloader,
-) -> None:
-    res = await retrieve_best_fulltext(doi, client)
-
-    if not res:
-        logger.debug("No fulltext for DOI %s", doi)
-        return
-
-    logger.debug("Saving fulltext for DOI %s", doi)
-    try:
-        con.execute(
-            """insert into doi_fulltext values (?, ?, ?, ?, ?, ?, ?)""",
-            (doi, *res, datetime.now()),
-        )
-        con.commit()
-    except sqlite3.IntegrityError:
-        logger.error("SQLite integrity error trying to insert DOI %s", doi)
-
-
-async def retrieve_best_fulltext(doi: str, client: DOIDownloader) -> tuple | None:
-    # Does DOI link directly to PDF?
-    logger.debug("Checking for direct link for DOI %s", doi)
-    doi_url = httpx.URL("https://doi.org").join(f"/{quote(doi)}")
-    res = await client.retrieve_fulltext(doi_url, expected_filetype="pdf")
-    if res.error is None:
-        return res.as_tuple()
-
-    # Can we use information from HTML <meta> elements?
-    logger.debug("Checking for metadata for DOI %s", doi)
-    direct_url = res.url
-    res = await client.metadata_from_url(direct_url)
-    if res.content is not None:
-        try:
-            fulltext_url, filetype = html.fulltext_urls_from_meta(res.content)  # pyright: ignore[reportGeneralTypeIssues]
-            res = await client.retrieve_fulltext(
-                fulltext_url, expected_filetype=filetype
-            )
-            if res.error is None:
-                return res.as_tuple()
-        except TypeError:
-            pass
-
-    # URL templates by hostname
-    logger.debug("Checking for URL template for DOI %s", doi)
-    for template in url_templates.get(direct_url.host, []):
-        tmpl_url = httpx.URL(template.format(doi=quote(doi)))
-        res = await client.retrieve_fulltext(tmpl_url, expected_filetype="pdf")
-        if res.error is None:
-            return res.as_tuple()
-
-    # Unpaywall
-    logger.debug("Checking for Unpaywall for DOI %s", doi)
-    unpaywall_url = await client.best_unpaywall_url(doi)
-    if unpaywall_url:
-        res = await client.retrieve_fulltext(unpaywall_url, expected_filetype="pdf")
-        if res.error is None:
-            return res.as_tuple()
-
-    return None

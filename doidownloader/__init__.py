@@ -8,9 +8,9 @@ different domains can happen asynchronously (i.e., one slow website won't stall 
 your other downloads).
 
 """
+from .core import DownloadTask
 from .doidownloader import (
     DOIDownloader,
     LookupResult,
-    save_fulltexts_from_dois,
 )
 from .files import FileWithSameContentError, determine_filename, determine_filetype

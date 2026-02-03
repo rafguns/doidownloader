@@ -5,17 +5,27 @@ from pathlib import Path
 
 import click
 
+from . import strategies
+from .core import DownloadTask
 from .crawl_delays import CrawlDelays
 from .db import prepare_tables
-from .doidownloader import DOIDownloader, save_fulltexts_from_dois
+from .doidownloader import DOIDownloader
 
 
 async def store_fulltexts(
-    dois: list[str], con: sqlite3.Connection, email: str | None
+    dois: list[str], con: sqlite3.Connection, email: str | None, strat_names: list[str]
 ) -> None:
     crawl_delays = CrawlDelays("robots.txt")
+    strat_names = strat_names or [
+        "direct_link",
+        "html_meta",
+        "url_templates",
+        "unpaywall",
+    ]
+    strats = [getattr(strategies, name) for name in strat_names]
     async with DOIDownloader(crawl_delays=crawl_delays, email_address=email) as client:
-        await save_fulltexts_from_dois(dois, con, client)
+        download_task = DownloadTask(dois, con, strats)
+        await download_task.save_fulltexts(client)
 
 
 @click.command()
@@ -36,8 +46,19 @@ async def store_fulltexts(
 @click.option(
     "--email", type=str, help="Email address, which can speed up lookups in Unpaywall"
 )
+@click.option(
+    "--strat",
+    "-s",
+    type=str,
+    multiple=True,
+    help="Strategies to retrieve the 'best' full-text",
+)
 def main(
-    dois: list[str], fh: click.File, database: click.Path, email: str | None
+    dois: list[str],
+    fh: click.File,
+    database: click.Path,
+    email: str | None,
+    strat: list[str],
 ) -> None:
     """DOIdownloader: You give it DOIs, it gives you the article PDFs.
     Either supply a list of DOIs as arguments, e.g.:
@@ -68,7 +89,7 @@ def main(
     con = sqlite3.connect(str(database))
     prepare_tables(con)
 
-    asyncio.run(store_fulltexts(dois, con, email))
+    asyncio.run(store_fulltexts(dois, con, email, strat))
 
 
 if __name__ == "__main__":
